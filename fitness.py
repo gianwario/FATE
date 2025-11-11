@@ -2,14 +2,16 @@
 import pandas as pd
 import numpy as np
 from fairlearn.postprocessing import ThresholdOptimizer
-from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score
+from sklearn.metrics import accuracy_score, average_precision_score
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import GradientBoostingClassifier
-from data_preparation import prepare_data_model
+from preprocessing import prepare_data_model
+
+from practices import apply_techniques
 
 
 def fairness_metrics(test_data, test_indices, protected_attribute, predictions, target_column):
@@ -58,22 +60,38 @@ def fairness_metrics(test_data, test_indices, protected_attribute, predictions, 
     }
 
 
-def fitness(data, technique, model, protected_attribute, target_column):
+def fitness(data, technique, model, protected_attribute, target_column, perf_weight=0.5, fair_weight=0.5):
     """
     Evaluate the fitness of a model based on performance and fairness.
 
     Args:
         data (pd.DataFrame): The dataset.
-        technique (str): The technique used.
+        technique (str or list): The technique(s) used (single technique or list of techniques).
         model (str): The model to be evaluated.
         protected_attribute (str): Name of the protected attribute column.
         target_column (str): Name of the target column.
+        perf_weight (float): Weight (alpha) applied to the performance score (PS).
+        fair_weight (float): Weight (beta) applied to the fairness score (FS).
 
     Returns:
-        float: The fitness value of the model.
+        float: The fitness value computed as (alpha * PS - beta * FS).
     """
+    # If technique is a list/tuple, apply each technique in sequence; if a single technique, apply it
+    if isinstance(technique, (list, tuple)):
+        for t in technique:
+            try:
+                data = apply_techniques(data, t, protected_attribute)
+            except Exception:
+                # if a technique fails, skip it to allow GA to continue
+                continue
+    elif technique:
+        try:
+            data = apply_techniques(data, technique, protected_attribute)
+        except Exception:
+            pass
+
     # Prepare data for modeling
-    data = prepare_data_model(data, target_column)
+    #data = prepare_data_model(data, target_column)
     y = data[target_column]
     X = data.drop(columns=[target_column])
     X = pd.get_dummies(X, drop_first=True)
@@ -92,89 +110,59 @@ def fitness(data, technique, model, protected_attribute, target_column):
         classifier = KNeighborsClassifier()
     elif model == 'gradient_boosting':
         classifier = GradientBoostingClassifier()
+    else:
+        raise ValueError(f"Unknown model identifier: {model}")
     
-    print(y_train.unique())
     # Train the model and make predictions
-    classifier.fit(X_train, y_train)
-    y_pred = classifier.predict(X_test)
+    try:
+        classifier.fit(X_train, y_train)
+        y_pred = classifier.predict(X_test)
+    except Exception:
+        # if model training fails, return a large fitness (bad)
+        return float('inf')
 
     # Calculate performance metrics
+    # Calculate fallback performance metric (accuracy) for use if PR-AUC can't be computed
     accuracy = accuracy_score(y_test, y_pred)
-    precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
-    recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
-    f1 = f1_score(y_test, y_pred, average='weighted')
+
+    # Compute PR-AUC (average precision) as performance score
+    try:
+        # Prefer predicted probabilities for positive class
+        if hasattr(classifier, "predict_proba"):
+            y_scores = classifier.predict_proba(X_test)
+            # binary: take column 1
+            if y_scores.ndim == 2 and y_scores.shape[1] == 2:
+                y_score_pos = y_scores[:, 1]
+            else:
+                y_score_pos = y_scores
+        elif hasattr(classifier, "decision_function"):
+            y_score_pos = classifier.decision_function(X_test)
+        else:
+            # fallback to predicted labels
+            y_score_pos = y_pred
+
+        # If binary classification compute average precision directly
+        if len(np.unique(y_test)) == 2:
+            performance_score = average_precision_score(y_test, y_score_pos)
+        else:
+            # multiclass: try using probability matrix if available
+            if hasattr(classifier, "predict_proba") and y_scores.ndim == 2:
+                performance_score = average_precision_score(y_test, y_scores, average='weighted')
+            else:
+                # fallback to accuracy if multiclass probabilities not available
+                performance_score = accuracy
+    except Exception:
+        # on error fallback to accuracy
+        performance_score = accuracy
 
     # Compute fairness metrics
     fairness = fairness_metrics(data, X_test.index, protected_attribute, y_pred, target_column)
 
-    # Calculate average performance score
-    performance_score = (accuracy + precision + recall + f1) / 4
-
     # Sum of fairness metrics
-    fairness_score = sum(fairness.values())
+    fairness_score = sum(fairness.values().abs())
 
-    # Compute fitness value
-    fitness_value = (1 - performance_score) + fairness_score
+    # Compute fitness value as alpha * PS - beta * FS
+    fitness_value = perf_weight * performance_score - fair_weight * fairness_score
     return fitness_value
 
 
-def fitness_model_optimization(model, techniques, X, y, protected_attribute, output_dir, X_df):
-    """
-    Evaluate and optimize the model using various techniques to find the best fitness.
-
-    Args:
-        model: The model to be optimized.
-        techniques (list): List of techniques to be applied.
-        X (pd.DataFrame): Feature matrix.
-        y (pd.Series): Target vector.
-        protected_attribute (str): Name of the protected attribute column.
-        output_dir (str): Directory to save the best model.
-        X_df (pd.DataFrame): DataFrame containing features and protected attribute.
-
-    Returns:
-        tuple: The best model and its fitness value.
-    """
-    from model_optimization import hyperparameter_tuning, outcomes_transformation, outcomes_optimization
-    import joblib
-
-    best_fitness = float('inf')
-    best_model = None
-
-    # Apply each optimization technique and evaluate fitness
-    for technique in techniques:
-        if technique == 'hyperparameter_tuning':
-            current_model = hyperparameter_tuning(model, X, y, output_dir)
-        elif technique == 'outcomes_transformation':
-            current_model = outcomes_transformation(model, X, y, protected_attribute, output_dir, X_df)
-        elif technique == 'outcomes_optimization':
-            current_model = outcomes_optimization(model, X, y, protected_attribute, output_dir, X_df)
-        else:
-            continue
-
-        # Make predictions with the optimized model
-        y_pred = current_model.predict(X) if not isinstance(current_model,
-                                                            ThresholdOptimizer) else current_model.predict(X,
-                                                                                                           sensitive_features=
-                                                                                                           X_df[
-                                                                                                               protected_attribute])
-
-        # Calculate performance metrics
-        accuracy = accuracy_score(y, y_pred)
-        precision = precision_score(y, y_pred, average='weighted', zero_division=0)
-        recall = recall_score(y, y_pred, average='weighted', zero_division=0)
-        f1 = f1_score(y, y_pred, average='weighted')
-
-        # Compute fairness metrics
-        fairness = fairness_metrics(X_df, X.index, protected_attribute, y_pred, y.name)
-        performance_score = (accuracy + precision + recall + f1) / 4
-        fairness_score = sum(fairness.values())
-
-        # Compute fitness value
-        fitness_value = (1 - performance_score) + fairness_score
-
-        # Check if the current model is the best
-        if fitness_value < best_fitness:
-            best_fitness = fitness_value
-            best_model = current_model
-
-    return best_model, best_fitness

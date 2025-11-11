@@ -1,180 +1,183 @@
-# preprocessing.py
 import pandas as pd
-from sklearn.preprocessing import StandardScaler, OneHotEncoder, MinMaxScaler
-from sklearn.utils import resample
-from sklearn.model_selection import train_test_split
-from sklearn.cluster import KMeans
-import numpy as np
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 
-# Function to apply OneHot encoding and standard scaling
-def apply_onehot_standard_transformation(data, protected_attribute):
+def convert_target_to_categorical(dataset, target_column):
     """
-    Apply OneHot encoding to the protected attribute and standard scaling to numeric columns.
-    """
-    # Initialize the OneHotEncoder
-    onehot_encoder = OneHotEncoder(sparse_output=False)
-    # Perform OneHot encoding on the specified column
-    encoded_columns = onehot_encoder.fit_transform(data[[protected_attribute]])
-    # Convert the encoded columns to a DataFrame
-    encoded_df = pd.DataFrame(encoded_columns, columns=[f"{protected_attribute}_{i}" for i in range(encoded_columns.shape[1])])
-    # Concatenate the encoded columns to the original data and drop the original column
-    data = pd.concat([data, encoded_df], axis=1).drop(columns=[protected_attribute])
-    # Select numeric columns for standard scaling
-    numeric_columns = data.select_dtypes(include=[np.number]).columns
-    # Apply StandardScaler to the numeric columns
-    data[numeric_columns] = StandardScaler().fit_transform(data[numeric_columns])
-    print(f"Transformation: OneHot Encoding and Standard Scaling for {protected_attribute}")
-    print(data.head())
-    return data
+    Convert the target column to a categorical variable if it is continuous.
+    If the target column is already categorical, this function does nothing.
 
-# Function for stratified sampling to balance the dataset
-def stratified_sampling(data, protected_attribute):
-    """
-    Perform stratified sampling to balance the dataset with respect to the protected attribute.
-    """
-    if protected_attribute not in data.columns:
-        print(f"The protected attribute '{protected_attribute}' is not present in the dataset.")
-        return pd.DataFrame()
-    # Get the value counts of the protected attribute
-    value_counts = data[protected_attribute].value_counts()
-    # Find the minimum count among the value counts
-    min_count = value_counts.min()
-    balanced_dataset = pd.DataFrame()
-    for value in data[protected_attribute].unique():
-        # Create a subset for each unique value of the protected attribute
-        subset = data[data[protected_attribute] == value]
-        # Calculate the test size for train-test split
-        test_size = min((min_count - 1) / len(subset), 0.99)
-        # Perform train-test split to achieve stratification
-        stratified_subset, _ = train_test_split(subset, test_size=test_size, stratify=subset[protected_attribute], random_state=42)
-        # Concatenate the stratified subset to the balanced dataset
-        balanced_dataset = pd.concat([balanced_dataset, stratified_subset], ignore_index=True)
-    # Shuffle the balanced dataset
-    balanced_dataset = balanced_dataset.sample(frac=1).reset_index(drop=True)
-    print(f"Transformation: Stratified Sampling for {protected_attribute}")
-    print(balanced_dataset.head())
-    return balanced_dataset
+    Args:
+        dataset (pd.DataFrame): The dataset containing the target column.
+        target_column (str): The name of the target column to convert.
 
-# Function for oversampling to ensure equal representation
-def apply_oversampling(data, protected_attribute):
+    Returns:
+        pd.DataFrame: The updated dataset with the target variable converted to categorical.
     """
-    Apply oversampling to ensure that each category of the protected attribute is equally represented.
-    """
-    max_size = data[protected_attribute].value_counts().max()
-    balanced_df = pd.DataFrame()
-    for value in data[protected_attribute].unique():
-        # Create a subset for each unique value of the protected attribute
-        subset = data[data[protected_attribute] == value]
-        # Resample the subset to the maximum size
-        resampled_subset = resample(subset, replace=True, n_samples=max_size, random_state=123)
-        # Concatenate the resampled subset to the balanced DataFrame
-        balanced_df = pd.concat([balanced_df, resampled_subset])
-    # Shuffle the balanced DataFrame
-    balanced_df = balanced_df.sample(frac=1, random_state=123).reset_index(drop=True)
-    print(f"Transformation: Oversampling for Fairness for {protected_attribute}")
-    print(balanced_df.head())
-    return balanced_df
+    if pd.api.types.is_numeric_dtype(dataset[target_column]):
+        # Define bins and labels for categorical conversion
+        bins = [0, 2, 4, 6, 8, 10]
+        labels = [1, 2, 3, 4, 5]
+        # Convert the target column to categorical
+        dataset[target_column] = pd.cut(dataset[target_column], bins=bins, labels=labels, include_lowest=True)
+    return dataset
 
-# Function for undersampling to ensure equal representation
-def apply_undersampling(data, protected_attribute):
-    """
-    Apply undersampling to ensure that each category of the protected attribute is equally represented.
-    """
-    min_size = data[protected_attribute].value_counts().min()
-    balanced_df = pd.DataFrame()
-    for value in data[protected_attribute].unique():
-        # Create a subset for each unique value of the protected attribute
-        subset = data[data[protected_attribute] == value]
-        # Resample the subset to the minimum size
-        resampled_subset = resample(subset, replace=False, n_samples=min_size, random_state=123)
-        # Concatenate the resampled subset to the balanced DataFrame
-        balanced_df = pd.concat([balanced_df, resampled_subset])
-    # Shuffle the balanced DataFrame
-    balanced_df = balanced_df.sample(frac=1, random_state=123).reset_index(drop=True)
-    print(f"Transformation: Undersampling for Fairness for {protected_attribute}")
-    print(balanced_df.head())
-    return balanced_df
 
-# Function for applying KMeans clustering
-def apply_clustering(data, protected_attribute, n_clusters=2):
+def handle_missing_values(dataset, target_column):
     """
-    Apply KMeans clustering to the numeric columns and add cluster labels to the dataset.
-    """
-    # Select numeric columns for clustering
-    numerical_columns = data.select_dtypes(include=[np.number]).columns
-    X = data[numerical_columns]
-    # Initialize KMeans with the specified number of clusters
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
-    # Fit KMeans and get the cluster labels
-    cluster_labels = kmeans.fit_predict(X)
-    # Create a copy of the data and add the cluster labels
-    clustered_data = data.copy()
-    clustered_data['Cluster'] = cluster_labels
-    print(f"Transformation: Clustering for {protected_attribute}")
-    print(clustered_data.head())
-    return clustered_data
+    Remove rows from the dataset that have NaN values in the target column.
 
-# Function for applying Inverse Probability Weighting (IPW)
-def apply_ipw(data, protected_attribute):
-    """
-    Apply Inverse Probability Weighting to adjust the dataset for fairness.
-    """
-    # Calculate the probabilities for each value of the protected attribute
-    probabilities = data[protected_attribute].value_counts(normalize=True)
-    # Map each value to its inverse probability
-    weights = data[protected_attribute].map(lambda x: 1 / probabilities[x])
-    # Create a copy of the data and add the weights
-    weighted_data = data.copy()
-    weighted_data['Weight'] = weights
-    print(f"Transformation: Inverse Probability Weighting for {protected_attribute}")
-    print(weighted_data.head())
-    return weighted_data
+    Args:
+        dataset (pd.DataFrame): The dataset to clean.
+        target_column (str): The name of the target column.
 
-# Function for creating a matched sample
-def apply_matching(data, protected_attribute):
+    Returns:
+        pd.DataFrame: The cleaned dataset without rows containing NaN values in the target column.
     """
-    Shuffle the dataset to create a matched sample.
-    """
-    # Shuffle the data
-    matched_data = data.sample(frac=1, random_state=42)
-    print(f"Transformation: Matching for {protected_attribute}")
-    print(matched_data.head())
-    return matched_data
+    # Drop rows with missing values in the target column
+    dataset = dataset.dropna(subset=[target_column])
+    return dataset
 
-# Function for applying Min-Max scaling
-def apply_min_max_scaling(data, protected_attribute):
+def prepare_data_dataset(dataset, target_column):
     """
-    Apply Min-Max scaling to numeric columns to bring them to a specific range.
-    """
-    # Select numeric columns for scaling
-    numeric_columns = data.select_dtypes(include=[np.number]).columns
-    # Apply MinMaxScaler to the numeric columns
-    data[numeric_columns] = MinMaxScaler().fit_transform(data[numeric_columns])
-    print(f"Transformation: Min-Max Scaling for {protected_attribute}")
-    print(data.head())
-    return data
+    Prepare the dataset for analysis by converting the target column to categorical
+    and handling NaN values.
 
-# Function to apply a specified preprocessing technique
-def apply_techniques(data, technique, protected_attribute):
+    Args:
+        dataset (pd.DataFrame): The dataset to prepare.
+        target_column (str): The name of the target column to prepare.
+
+    Returns:
+        pd.DataFrame: The prepared dataset.
     """
-    Apply the specified preprocessing technique to the dataset.
+    # Convert the target column to categorical if necessary
+    dataset = convert_target_to_categorical(dataset, target_column)
+    # Remove rows with missing values in the target column
+    dataset = handle_missing_values(dataset, target_column)
+    return dataset
+
+def prepare_data_for_fairness(dataset, sensitive_cols, target_col):
     """
-    # Apply the appropriate preprocessing technique based on the 'technique' parameter
-    if technique == 'onehot_standard':
-        return apply_onehot_standard_transformation(data, protected_attribute)
-    elif technique == 'stratified_sampling':
-        return stratified_sampling(data, protected_attribute)
-    elif technique == 'oversampling':
-        return apply_oversampling(data, protected_attribute)
-    elif technique == 'undersampling':
-        return apply_undersampling(data, protected_attribute)
-    elif technique == 'clustering':
-        return apply_clustering(data, protected_attribute)
-    elif technique == 'ipw':
-        return apply_ipw(data, protected_attribute)
-    elif technique == 'matching':
-        return apply_matching(data, protected_attribute)
-    elif technique == 'min_max_scaling':
-        return apply_min_max_scaling(data, protected_attribute)
+    Prepare the dataset for fairness evaluations by encoding the sensitive columns
+    and binarizing the target column.
+
+    Args:
+        dataset (pd.DataFrame): The dataset to prepare.
+        sensitive_cols (list): The list of sensitive columns to encode.
+        target_col (str): The name of the target column.
+
+    Returns:
+        tuple: The feature matrix (X), target vector (y), and the processed dataset.
+    """
+    # Initialize a LabelEncoder for encoding sensitive columns
+    label_encoder = LabelEncoder()
+    for col in sensitive_cols:
+        # Encode each sensitive column
+        dataset[col] = label_encoder.fit_transform(dataset[col])
+
+    # Binarize the target column based on its median value
+    dataset[target_col] = (dataset[target_col] > dataset[target_col].median()).astype(int)
+
+    # Extract features (X) and target (y)
+    X = dataset[sensitive_cols]
+    y = dataset[target_col]
+
+    return X, y, dataset
+
+def sample_dataset(dataset, fraction=0.1):
+    """
+    Sample a fraction of the dataset for analysis.
+
+    Args:
+        dataset (pd.DataFrame): The dataset to sample.
+        fraction (float): The fraction of the dataset to sample.
+
+    Returns:
+        pd.DataFrame: The sampled dataset.
+    """
+    # Randomly sample a fraction of the dataset
+    return dataset.sample(frac=fraction, random_state=42)
+
+def prepare_data_model(dataset, target_column):
+    """
+    Prepare the dataset for modeling by performing minimal preprocessing:
+    - copy dataset
+    - ensure target exists
+    - drop rows with missing target
+
+    This is intentionally minimal to avoid destructive transformations during GA.
+    """
+    dataset = dataset.copy()
+
+    if target_column not in dataset.columns:
+        raise ValueError(f"Target column '{target_column}' not found in dataset.")
+
+    # Drop rows with missing target values
+    dataset = dataset.dropna(subset=[target_column])
+
+    return dataset
+
+def prepare_data_for_model_optimization(dataset, target_column, protected_attribute):
+    """
+    Prepare the dataset for model optimization, ensuring the protected attribute is retained.
+
+    Args:
+        dataset (pd.DataFrame): The dataset to prepare.
+        target_column (str): The name of the target column.
+        protected_attribute (str): The name of the protected attribute.
+
+    Returns:
+        tuple: (X, y, dataset) where X is the feature matrix, y is the target vector,
+               and dataset is the processed dataset.
+    """
+    dataset = dataset.copy()
+    if target_column not in dataset.columns or protected_attribute not in dataset.columns:
+        raise ValueError("Both target_column and protected_attribute must be in the dataset")
+
+    # Encode categorical variables
+    categorical_columns = dataset.select_dtypes(include=['object']).columns
+    label_encoders = {col: LabelEncoder() for col in categorical_columns}
+    for col, le in label_encoders.items():
+        dataset[col] = le.fit_transform(dataset[col])
+
+    # Convert target to binary if it has more than two unique values
+    if dataset[target_column].nunique() > 2:
+        dataset[target_column] = (dataset[target_column] > dataset[target_column].median()).astype(int)
+
+    # Prepare feature matrix (X) and target vector (y)
+    X = dataset.drop(columns=[target_column])
+    y = dataset[target_column]
+
+    # Ensure the protected attribute is included in X
+    if protected_attribute not in X.columns:
+        X[protected_attribute] = dataset[protected_attribute]
+
+    return X, y, dataset
+
+def preprocess_protected_attribute(X_df, protected_attribute):
+    """
+    Ensure the protected attribute is in a valid format for ThresholdOptimizer.
+    If the attribute is not binary, it will be converted to a binary format.
+
+    Args:
+        X_df (pd.DataFrame): The DataFrame containing features.
+        protected_attribute (str): The name of the protected attribute column.
+
+    Returns:
+        pd.Series: The processed protected attribute.
+    """
+    if protected_attribute not in X_df.columns:
+        raise ValueError(f"Protected attribute '{protected_attribute}' not found in dataset columns.")
+
+    # Check if the protected attribute is categorical
+    if pd.api.types.is_categorical_dtype(X_df[protected_attribute]):
+        categories = X_df[protected_attribute].cat.categories
     else:
-        return data
+        categories = X_df[protected_attribute].unique()
+
+    # Convert to binary if there are more than two categories
+    if len(categories) > 2:
+        print(f"Warning: Reducing {protected_attribute} to binary for simplicity.")
+        X_df[protected_attribute] = pd.qcut(X_df[protected_attribute], q=2, labels=False, duplicates='drop')
+
+    return X_df[protected_attribute]
+
