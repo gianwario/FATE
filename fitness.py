@@ -159,10 +159,10 @@ def fitness(data, technique, model, protected_attribute, target_column, perf_wei
     fairness = fairness_metrics(data, X_test.index, protected_attribute, y_pred, target_column)
 
     # Sum of fairness metrics
-    fairness_score = sum(fairness.values().abs())
+    fairness_score = sum(fairness.values())
 
     # Compute fitness value as alpha * PS - beta * FS
     fitness_value = perf_weight * performance_score - fair_weight * fairness_score
-    return fitness_value
+    return fitness_value, fairness_score, performance_score
 
 

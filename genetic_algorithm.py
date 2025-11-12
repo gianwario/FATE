@@ -57,11 +57,19 @@ def genetic_algorithm(dataset, protected_attribute, target_column, model, genera
     for generation in range(generations):
         print(f"Generation {generation + 1}/{generations} start")
         # Evaluate fitness of each individual (technique list) using the fixed model
-        fitness_scores = [
-                (technique_list, model, fitness(dataset.copy(), technique_list, model, protected_attribute, target_column))
-                for technique_list in population
-            ]
-
+        fitness_scores = []
+        for technique_list in population:
+            fit_result = fitness(dataset.copy(), technique_list, model, protected_attribute, target_column)
+            # fitness may return either a single float (legacy/error) or a tuple (fitness_value, fairness_score, performance_score)
+            if isinstance(fit_result, tuple) and len(fit_result) >= 1:
+                fitness_value = fit_result[0]
+                fairness_score = fit_result[1] if len(fit_result) > 1 else None
+                performance_score = fit_result[2] if len(fit_result) > 2 else None
+            else:
+                fitness_value = fit_result
+                fairness_score = None
+                performance_score = None
+            fitness_scores.append((technique_list, model, fitness_value, fairness_score, performance_score))
 
         # Sort the population by fitness scores
         sorted_population = sorted(fitness_scores, key=lambda x: x[2])
@@ -115,8 +123,9 @@ def genetic_algorithm(dataset, protected_attribute, target_column, model, genera
 
         print(f"End of generation {generation + 1}")
 
-    # Select the best solution based on the lowest fitness score
+    # Select the best solution based on the lowest fitness score (consistent with selection above)
     best_solution = min(fitness_scores, key=lambda x: x[2])
-    print(f"Best solution: Techniques={best_solution[0]}, Model={best_solution[1]}, Fitness={best_solution[2]}")
+    # best_solution is (techniques, model, fitness_value, fairness_score, performance_score)
+    print(f"Best solution: Techniques={best_solution[0]}, Model={best_solution[1]}, Fitness={best_solution[2]}, Fairness={best_solution[3]}, Performance={best_solution[4]}")
     return best_solution
 
