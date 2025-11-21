@@ -41,7 +41,7 @@ def get_user_input():
     return dataset, protected_attribute, target_column, output_dir, sample_fraction, model_identifier
 
 
-# Main flow: only dataset optimization
+# Main flow
 #dataset, protected_attribute, target_column, output_dir, sample_fraction, model_identifier = get_user_input()
 dataset_path = "datasets/processed-adult.csv"
 dataset = pd.read_csv(dataset_path)
@@ -120,24 +120,54 @@ if __name__ == "__main__":
     # Configuration: edit these entries to match your datasets and columns
     datasets = [
         {
-            "path": "datasets/dataset.csv",             # <- edit path
-            "protected_attribute": "Sex_Code_Text",    # <- edit protected attribute name
-            "target_column": "DecileScore",            # <- edit target column name
-            "output_dir": "output/dataset_results"     # output dir per-dataset
+            "path": "datasets/adult_processed.csv",             
+            "protected_attribute": "sex",   
+            "target_column": "Probability",           
+            "output_dir": "output/adult_sex_results"     
         },
+        {
+            "path": "datasets/adult_processed.csv",             
+            "protected_attribute": "race",   
+            "target_column": "Probability",           
+            "output_dir": "output/adult_race_results"     
+        },
+        {
+            "path": "datasets/german_processed.csv",             
+            "protected_attribute": "sex",   
+            "target_column": "Probability",           
+            "output_dir": "output/german_sex_results"     
+        },
+        {
+            "path": "datasets/german_processed.csv",             
+            "protected_attribute": "age",   
+            "target_column": "Probability",           
+            "output_dir": "output/german_age_results"     
+        },
+        {
+            "path": "datasets/heart_processed.csv",             
+            "protected_attribute": "sex",   
+            "target_column": "num",           
+            "output_dir": "output/heart_results"     
+        },
+        {
+            "path": "datasets/heart_processed.csv",             
+            "protected_attribute": "age",   
+            "target_column": "num",           
+            "output_dir": "output/heart_age_results"     
+        }
         # Add more dataset entries as needed:
         # {"path": "Dataset/other.csv", "protected_attribute": "protected_col", "target_column": "target", "output_dir": "Output/other_results"}
     ]
 
     # Models to evaluate (these are model identifier strings consumed by your genetic_algorithm)
-    models = ["rf", "lr", "svc", "xgb"]  # edit as needed
+    models = ["rf", "lr", "svc", "xgb"]  
 
     # Parameter grids
     sweep_sizes = [25, 50, 100, 250, 500]  # used for both population_size and generations
     rates = [0.25, 0.5, 0.75, 1.0]         # for crossover_rate and mutation_rate
 
     # Other defaults
-    sample_fraction = 0.1  # sample fraction for dataset sampling
+    sample_fraction = 1  # sample fraction for dataset sampling
     overall_results = []
     
     # progressive results file (will be appended to after every run)
