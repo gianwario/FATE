@@ -1,183 +1,212 @@
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder, StandardScaler
+import numpy as np
+from sklearn.impute import SimpleImputer
 
-def convert_target_to_categorical(dataset, target_column):
+
+def load_dataset(path):
+    """Load a CSV dataset into a DataFrame."""
+    return pd.read_csv(path)
+
+
+def sample_dataset(df, fraction=1.0, random_state=42):
+    """Return a random sample (fraction) of the dataframe."""
+    if fraction >= 1.0:
+        return df.copy()
+    return df.sample(frac=fraction, random_state=random_state).reset_index(drop=True)
+
+
+def minimal_clean(df, target_column=None):
+    """Minimal cleaning:
+    - Drop rows with missing target (if provided)
+    - Remove columns that are all NA
+    - Return a copy
     """
-    Convert the target column to a categorical variable if it is continuous.
-    If the target column is already categorical, this function does nothing.
+    df = df.copy()
+    if target_column is not None and target_column in df.columns:
+        df = df.dropna(subset=[target_column])
+    # drop columns that are entirely NA
+    df = df.dropna(axis=1, how='all')
+    return df.reset_index(drop=True)
 
-    Args:
-        dataset (pd.DataFrame): The dataset containing the target column.
-        target_column (str): The name of the target column to convert.
 
-    Returns:
-        pd.DataFrame: The updated dataset with the target variable converted to categorical.
+def encode_and_impute(df, protected_attribute=None):
+    """Encode categorical columns with one-hot (pd.get_dummies) and impute numeric NaNs with median.
+    Keep the protected_attribute column unchanged (it will be included as-is).
+    Returns processed_df.
     """
-    if pd.api.types.is_numeric_dtype(dataset[target_column]):
-        # Define bins and labels for categorical conversion
-        bins = [0, 2, 4, 6, 8, 10]
-        labels = [1, 2, 3, 4, 5]
-        # Convert the target column to categorical
-        dataset[target_column] = pd.cut(dataset[target_column], bins=bins, labels=labels, include_lowest=True)
-    return dataset
+    df = df.copy()
+    # preserve protected attribute column if present
+    protected = None
+    if protected_attribute and protected_attribute in df.columns:
+        protected = df[protected_attribute]
+        df = df.drop(columns=[protected_attribute])
+
+    # One-hot encode object / category columns
+    cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+    if cat_cols:
+        df = pd.get_dummies(df, columns=cat_cols, drop_first=True)
+
+    # Impute numeric columns with median
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    if num_cols:
+        imputer = SimpleImputer(strategy='median')
+        df[num_cols] = imputer.fit_transform(df[num_cols])
+
+    # reattach protected attribute at the end
+    if protected is not None:
+        df[protected_attribute] = protected.reset_index(drop=True)
+
+    return df
 
 
-def handle_missing_values(dataset, target_column):
+def binarize_target(df, target_column, positive_values=None, threshold=None):
+    """Binarize target column to 0/1.
+
+    Options:
+    - positive_values: iterable of values to map to 1 (exact match)
+    - threshold: numeric threshold; values >= threshold -> 1
+
+    If neither provided and target is numeric with >2 uniques, median threshold is used.
     """
-    Remove rows from the dataset that have NaN values in the target column.
+    df = df.copy()
+    if target_column not in df.columns:
+        raise ValueError(f"Target column '{target_column}' not in dataframe")
 
-    Args:
-        dataset (pd.DataFrame): The dataset to clean.
-        target_column (str): The name of the target column.
+    vals = df[target_column]
+    if positive_values is not None:
+        df[target_column] = df[target_column].isin(positive_values).astype(int)
+        return df
 
-    Returns:
-        pd.DataFrame: The cleaned dataset without rows containing NaN values in the target column.
+    if threshold is not None:
+        df[target_column] = (pd.to_numeric(df[target_column], errors='coerce') >= threshold).astype(int)
+        return df
+
+    # fallback for numeric target: median split
+    if pd.api.types.is_numeric_dtype(df[target_column]) and df[target_column].nunique() > 2:
+        med = df[target_column].median()
+        df[target_column] = (df[target_column] >= med).astype(int)
+        return df
+
+    # if already binary numeric or categorical with two values, map to 0/1
+    unique_vals = df[target_column].dropna().unique()
+    if len(unique_vals) == 2:
+        mapping = {unique_vals[0]: 0, unique_vals[1]: 1}
+        df[target_column] = df[target_column].map(mapping).astype(int)
+        return df
+
+    # otherwise leave as-is (calling code should handle)
+    return df
+
+
+def prepare_data_model(df, target_column, protected_attribute=None, binarize=True):
+    """Minimal pipeline to prepare data for model training/evaluation.
+
+    Steps:
+    - minimal cleaning (drop rows with missing target)
+    - optional binarization of target
+    - encode categorical features and impute numeric NaNs
+    - ensure protected attribute is present and returned in dataframe
+
+    Returns: processed_df (features + target + protected attribute)
     """
-    # Drop rows with missing values in the target column
-    dataset = dataset.dropna(subset=[target_column])
-    return dataset
+    df = df.copy()
+    df = minimal_clean(df, target_column=target_column)
+    if binarize:
+        df = binarize_target(df, target_column)
+    df = encode_and_impute(df, protected_attribute=protected_attribute)
+    return df
 
-def prepare_data_dataset(dataset, target_column):
+
+def prepare_adult(df):
+    """Prepare the adult dataset:
+    - Ensure target column 'salary' is binary 0/1
+    - Collapse sex one-hot columns ('sex_Female','sex_Male') into single 'sex' column with values 0/1 (Female=1)
+    - Ensure race is numeric (0/1)
+    Returns processed DataFrame and canonical target/protected names.
     """
-    Prepare the dataset for analysis by converting the target column to categorical
-    and handling NaN values.
+    data = df.copy()
+    # Target
+    if 'salary' in data.columns:
+        # If salary is textual like '>50K' / '<=50K', map to 1/0
+        if data['salary'].dtype == object:
+            data['salary'] = data['salary'].astype(str).str.strip()
+            data['salary'] = data['salary'].map({'>50K': 1, '<=50K': 0, '>50K.': 1, '<=50K.': 0}).fillna(data['salary'])
+        # try to coerce to numeric
+        data['salary'] = pd.to_numeric(data['salary'], errors='coerce')
 
-    Args:
-        dataset (pd.DataFrame): The dataset to prepare.
-        target_column (str): The name of the target column to prepare.
+    # Sex columns might already be one-hot encoded as 'sex_Female' and 'sex_Male'
+    if 'sex_Female' in data.columns and 'sex_Male' in data.columns:
+        # create single 'sex' column: 1 if Female, 0 if Male (fallback to first non-null)
+        data['sex'] = data['sex_Female'].fillna(0).astype(int)
+    elif 'sex' in data.columns:
+        # if sex is textual, map common labels
+        if data['sex'].dtype == object:
+            data['sex'] = data['sex'].str.lower().map(lambda x: 1 if 'female' in str(x) else 0)
+        data['sex'] = pd.to_numeric(data['sex'], errors='coerce')
 
-    Returns:
-        pd.DataFrame: The prepared dataset.
+    # Race should be 0/1 already per your note; coerce to numeric
+    if 'race' in data.columns:
+        data['race'] = pd.to_numeric(data['race'], errors='coerce')
+
+    return data
+
+
+def prepare_german(df):
+    """Prepare the german dataset:
+    - Map sex codes (A95 -> female, A93 -> male) into a 'sex' column (0/1)
+    - Ensure Age is numeric
+    - Map Target (1/2) -> binary 0/1 (we map Target==2 to 1)
+    Returns processed DataFrame.
     """
-    # Convert the target column to categorical if necessary
-    dataset = convert_target_to_categorical(dataset, target_column)
-    # Remove rows with missing values in the target column
-    dataset = handle_missing_values(dataset, target_column)
-    return dataset
+    data = df.copy()
+    # Sex mapping
+    if 'sex' in data.columns:
+        # German dataset uses A91..A95 codes; map female and male
+        def map_sex_code(v):
+            try:
+                s = str(v)
+                if 'A95' in s or 'A92' in s:
+                    return 1
+                if 'A93' in s or 'A91' in s or 'A94' in s:
+                    return 0
+                if 'f' in s.lower():
+                    return 1
+                return 0
+            except Exception:
+                return 0
 
-def prepare_data_for_fairness(dataset, sensitive_cols, target_col):
+        data['sex'] = data['sex'].apply(map_sex_code)
+
+    # Age numeric
+    if 'Age' in data.columns:
+        data['Age'] = pd.to_numeric(data['Age'], errors='coerce')
+    if 'age' in data.columns:
+        data['age'] = pd.to_numeric(data['age'], errors='coerce')
+
+    # Target mapping: 2 -> 1, 1 -> 0
+    if 'Target' in data.columns:
+        data['Target'] = pd.to_numeric(data['Target'], errors='coerce')
+        data['Target'] = data['Target'].map(lambda x: 1 if x == 2 else 0 if x == 1 else x)
+
+    return data
+
+
+def prepare_heart(df):
+    """Prepare the heart dataset:
+    - Ensure sex is numeric (0/1)
+    - Ensure age numeric
+    - Binarize 'num' target: 0 -> 0 (no disease), >0 -> 1 (disease)
+    Returns processed DataFrame.
     """
-    Prepare the dataset for fairness evaluations by encoding the sensitive columns
-    and binarizing the target column.
+    data = df.copy()
+    if 'sex' in data.columns:
+        data['sex'] = pd.to_numeric(data['sex'], errors='coerce')
+    if 'age' in data.columns:
+        data['age'] = pd.to_numeric(data['age'], errors='coerce')
 
-    Args:
-        dataset (pd.DataFrame): The dataset to prepare.
-        sensitive_cols (list): The list of sensitive columns to encode.
-        target_col (str): The name of the target column.
+    if 'num' in data.columns:
+        data['num'] = pd.to_numeric(data['num'], errors='coerce')
+        data['num'] = data['num'].map(lambda x: 1 if pd.notna(x) and x > 0 else 0)
 
-    Returns:
-        tuple: The feature matrix (X), target vector (y), and the processed dataset.
-    """
-    # Initialize a LabelEncoder for encoding sensitive columns
-    label_encoder = LabelEncoder()
-    for col in sensitive_cols:
-        # Encode each sensitive column
-        dataset[col] = label_encoder.fit_transform(dataset[col])
-
-    # Binarize the target column based on its median value
-    dataset[target_col] = (dataset[target_col] > dataset[target_col].median()).astype(int)
-
-    # Extract features (X) and target (y)
-    X = dataset[sensitive_cols]
-    y = dataset[target_col]
-
-    return X, y, dataset
-
-def sample_dataset(dataset, fraction=0.1):
-    """
-    Sample a fraction of the dataset for analysis.
-
-    Args:
-        dataset (pd.DataFrame): The dataset to sample.
-        fraction (float): The fraction of the dataset to sample.
-
-    Returns:
-        pd.DataFrame: The sampled dataset.
-    """
-    # Randomly sample a fraction of the dataset
-    return dataset.sample(frac=fraction, random_state=42)
-
-def prepare_data_model(dataset, target_column):
-    """
-    Prepare the dataset for modeling by performing minimal preprocessing:
-    - copy dataset
-    - ensure target exists
-    - drop rows with missing target
-
-    This is intentionally minimal to avoid destructive transformations during GA.
-    """
-    dataset = dataset.copy()
-
-    if target_column not in dataset.columns:
-        raise ValueError(f"Target column '{target_column}' not found in dataset.")
-
-    # Drop rows with missing target values
-    dataset = dataset.dropna(subset=[target_column])
-
-    return dataset
-
-def prepare_data_for_model_optimization(dataset, target_column, protected_attribute):
-    """
-    Prepare the dataset for model optimization, ensuring the protected attribute is retained.
-
-    Args:
-        dataset (pd.DataFrame): The dataset to prepare.
-        target_column (str): The name of the target column.
-        protected_attribute (str): The name of the protected attribute.
-
-    Returns:
-        tuple: (X, y, dataset) where X is the feature matrix, y is the target vector,
-               and dataset is the processed dataset.
-    """
-    dataset = dataset.copy()
-    if target_column not in dataset.columns or protected_attribute not in dataset.columns:
-        raise ValueError("Both target_column and protected_attribute must be in the dataset")
-
-    # Encode categorical variables
-    categorical_columns = dataset.select_dtypes(include=['object']).columns
-    label_encoders = {col: LabelEncoder() for col in categorical_columns}
-    for col, le in label_encoders.items():
-        dataset[col] = le.fit_transform(dataset[col])
-
-    # Convert target to binary if it has more than two unique values
-    if dataset[target_column].nunique() > 2:
-        dataset[target_column] = (dataset[target_column] > dataset[target_column].median()).astype(int)
-
-    # Prepare feature matrix (X) and target vector (y)
-    X = dataset.drop(columns=[target_column])
-    y = dataset[target_column]
-
-    # Ensure the protected attribute is included in X
-    if protected_attribute not in X.columns:
-        X[protected_attribute] = dataset[protected_attribute]
-
-    return X, y, dataset
-
-def preprocess_protected_attribute(X_df, protected_attribute):
-    """
-    Ensure the protected attribute is in a valid format for ThresholdOptimizer.
-    If the attribute is not binary, it will be converted to a binary format.
-
-    Args:
-        X_df (pd.DataFrame): The DataFrame containing features.
-        protected_attribute (str): The name of the protected attribute column.
-
-    Returns:
-        pd.Series: The processed protected attribute.
-    """
-    if protected_attribute not in X_df.columns:
-        raise ValueError(f"Protected attribute '{protected_attribute}' not found in dataset columns.")
-
-    # Check if the protected attribute is categorical
-    if pd.api.types.is_categorical_dtype(X_df[protected_attribute]):
-        categories = X_df[protected_attribute].cat.categories
-    else:
-        categories = X_df[protected_attribute].unique()
-
-    # Convert to binary if there are more than two categories
-    if len(categories) > 2:
-        print(f"Warning: Reducing {protected_attribute} to binary for simplicity.")
-        X_df[protected_attribute] = pd.qcut(X_df[protected_attribute], q=2, labels=False, duplicates='drop')
-
-    return X_df[protected_attribute]
+    return data
 

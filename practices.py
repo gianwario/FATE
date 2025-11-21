@@ -7,42 +7,38 @@ from sklearn.cluster import KMeans
 import numpy as np
 
 # Function to apply OneHot encoding and standard scaling
-def apply_onehot_standard_transformation(data, protected_attribute):
+def apply_standard_transformation(data, protected_attribute):
     """
-    Apply OneHot encoding to the protected attribute and standard scaling to numeric columns.
-    
+    Apply standard scaling to numeric columns while preserving the protected attribute.
+
     Parameters:
     data (pd.DataFrame): The dataset.
-    protected_attribute (str): The categorical column to apply OneHot encoding.
-    
+    protected_attribute (str): The column to preserve (will NOT be one-hot encoded).
+
     Returns:
-    pd.DataFrame: The transformed dataset with OneHot encoding and standard scaling applied.
+    pd.DataFrame: The transformed dataset with numeric columns scaled.
     """
-    # Initialize the OneHotEncoder
-    onehot_encoder = OneHotEncoder(sparse=False)  # Set sparse=False to return a dense matrix
-    # Perform OneHot encoding on the specified column
-    encoded_columns = onehot_encoder.fit_transform(data[[protected_attribute]])
-    
-    # Get the unique categories (number of new columns after encoding)
-    category_names = onehot_encoder.categories_[0]  # Categories from the protected attribute
-    encoded_df = pd.DataFrame(encoded_columns, columns=[f"{protected_attribute}_{category}" for category in category_names])
-    
-    # Reset the index to ensure proper alignment when concatenating
-    encoded_df.index = data.index
-    
-    # Concatenate the encoded columns to the original data and drop the original column
-    data = pd.concat([data, encoded_df], axis=1).drop(columns=[protected_attribute])
+    # Work on a copy
+    df = data.copy()
+
+    # Preserve the protected attribute if present
+    if protected_attribute in df.columns:
+        protected = df[protected_attribute]
+        df = df.drop(columns=[protected_attribute])
+    else:
+        protected = None
 
     # Select numeric columns for standard scaling
-    numeric_columns = data.select_dtypes(include=[np.number]).columns
-    # Apply StandardScaler to the numeric columns
-    data[numeric_columns] = StandardScaler().fit_transform(data[numeric_columns])
+    numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
+    if numeric_columns:
+        df[numeric_columns] = StandardScaler().fit_transform(df[numeric_columns])
 
-    # Print the transformation results for verification
-    print(f"Transformation: OneHot Encoding and Standard Scaling for '{protected_attribute}' completed.")
-    print(data.head())  # Display the first few rows of the transformed dataset
-    
-    return data
+    # Reattach protected attribute unchanged
+    if protected is not None:
+        df[protected_attribute] = protected.values
+
+    print(f"Transformation: Standard Scaling for numeric columns completed (protected '{protected_attribute}' preserved).")
+    return df
 
 # Function for stratified sampling to balance the dataset
 def apply_stratified_sampling(data, protected_attribute):
@@ -191,8 +187,8 @@ def apply_techniques(data, technique, protected_attribute):
     Apply the specified preprocessing technique to the dataset.
     """
     # Apply the appropriate preprocessing technique based on the 'technique' parameter
-    if technique == 'onehot_standard':
-        return apply_onehot_standard_transformation(data, protected_attribute)
+    if technique == 'standard':
+        return apply_standard_transformation(data, protected_attribute)
     elif technique == 'stratified_sampling':
         return apply_stratified_sampling(data, protected_attribute)
     elif technique == 'oversampling':

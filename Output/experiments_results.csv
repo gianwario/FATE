@@ -1,2 +1,0 @@
-dataset,model_identifier,population_size,generations,crossover_rate,mutation_rate,techniques,model_used,fitness,fairness_score,performance_score,elapsed_seconds,error
-datasets/processed-adult.csv,random_forest,10,5,,,"[np.str_('undersampling'), np.str_('onehot_standard'), np.str_('stratified_sampling')]",random_forest,-0.007859733978234584,1.0157194679564692,1.0,,

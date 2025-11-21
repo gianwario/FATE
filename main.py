@@ -1,6 +1,6 @@
 import pandas as pd
 from genetic_algorithm import genetic_algorithm
-from preprocessing import sample_dataset, prepare_data_dataset
+from preprocessing import sample_dataset, prepare_data_model, prepare_adult, prepare_german, prepare_heart
 import os
 import time
 
@@ -41,249 +41,176 @@ def get_user_input():
     return dataset, protected_attribute, target_column, output_dir, sample_fraction, model_identifier
 
 
-# Main flow
-#dataset, protected_attribute, target_column, output_dir, sample_fraction, model_identifier = get_user_input()
-dataset_path = "datasets/processed-adult.csv"
-dataset = pd.read_csv(dataset_path)
-protected_attribute = "race"
-target_column = "salary"
+def execute_fate(sample_ready, ds_name, ds_path, protected_attribute, target, models,
+                 population_size, generations, alpha=0.5, beta=0.5, summary_path=None):
+    """
+    Run GA for the given prepared dataset and protected attribute across the provided models.
 
-if dataset is None:
-    exit()
+    Args:
+        sample_ready (pd.DataFrame): Prepared dataframe ready for modeling (features + target).
+        ds_name (str): Friendly dataset name.
+        ds_path (str): Path to dataset (used for logging/storage).
+        protected_attribute (str): Protected attribute column name present in sample_ready.
+        target (str): Target column name.
+        models (list): List of model identifiers to evaluate (e.g., ['rf','lr','svc','xgb']).
+        population_size (int): GA population size.
+        generations (int): GA generations.
+        alpha (float): GA crossover probability.
+        beta (float): GA mutation probability.
+        summary_path (str): Path to CSV file to append results to. If None, no file writing.
 
-# Sample the dataset
-dataset_sample = sample_dataset(dataset, fraction=0.5)
+    Returns:
+        list: rows written or created for each model (dicts)
+    """
+    results = []
+    for model_id in models:
+        print(f"-> Running GA on {ds_name} protected={protected_attribute} model={model_id}")
+        start = time.time()
+        try:
+            best = genetic_algorithm(sample_ready, protected_attribute, target, model_id,
+                                      generations=generations, population_size=population_size,
+                                      alpha=alpha, beta=beta)
 
-# Prepare the data for optimization
-dataset_sample = prepare_data_dataset(dataset_sample, target_column)
+            elapsed = time.time() - start
+            techniques = best[0] if best and len(best) > 0 else None
+            model_used = best[1] if best and len(best) > 1 else model_id
+            fitness_val = best[2] if best and len(best) > 2 else None
+            fairness_score = best[3] if best and len(best) > 3 else None
+            perf_score = best[4] if best and len(best) > 4 else None
 
-# Run the genetic algorithm (model is a model identifier string used by fitness)
-best_solution = genetic_algorithm(dataset_sample, protected_attribute, target_column, "random_forest",
-                                  generations=5, population_size=10, alpha=0.5, beta=0.5)
+            row = {
+                'dataset': ds_path,
+                'model_identifier': model_id,
+                'protected_attribute': protected_attribute,
+                'population_size': population_size,
+                'generations': generations,
+                'alpha': alpha,
+                'beta': beta,
+                'techniques': str(techniques),
+                'model_used': str(model_used),
+                'fitness': fitness_val,
+                'fairness_score': fairness_score,
+                'performance_score': perf_score,
+                'elapsed_seconds': elapsed,
+                'error': None
+            }
+            results.append(row)
+            if summary_path:
+                pd.DataFrame([row]).to_csv(summary_path, mode='a', header=False, index=False)
+            print(f"OK: ds={ds_name} prot={protected_attribute} model={model_id} fitness={fitness_val} elapsed={elapsed:.1f}s")
 
-# Print and save the best solution found by the genetic algorithm
-techniques = best_solution[0] if best_solution and len(best_solution) > 0 else None
-model_used = best_solution[1] if best_solution and len(best_solution) > 1 else "random_forest"
-fitness_value = best_solution[2] if best_solution and len(best_solution) > 2 else None
-fairness_score = best_solution[3] if best_solution and len(best_solution) > 3 else None
-performance_score = best_solution[4] if best_solution and len(best_solution) > 4 else None
+        except Exception as e:
+            elapsed = time.time() - start
+            err = {
+                'dataset': ds_path,
+                'model_identifier': model_id,
+                'protected_attribute': protected_attribute,
+                'population_size': population_size,
+                'generations': generations,
+                'alpha': alpha,
+                'beta': beta,
+                'techniques': None,
+                'model_used': None,
+                'fitness': None,
+                'fairness_score': None,
+                'performance_score': None,
+                'elapsed_seconds': elapsed,
+                'error': str(e)
+            }
+            results.append(err)
+            if summary_path:
+                pd.DataFrame([err]).to_csv(summary_path, mode='a', header=False, index=False)
+            print(f"ERROR: ds={ds_name} prot={protected_attribute} model={model_id} -> {e}")
 
-print(f"Best solution: Techniques={techniques}, Model={model_used}, Fitness={fitness_value}, Fairness={fairness_score}, Performance={performance_score}")
-os.makedirs("output", exist_ok=True)
-best_dataset_path = os.path.join("output", 'best_optimized_dataset.csv')
-dataset_sample.to_csv(best_dataset_path, index=False)
-print(f"Optimized dataset saved at: {best_dataset_path}")
-
-# Append this single-run result to the experiments CSV (create header if needed)
-summary_path = os.path.join("output", "experiments_results.csv")
-os.makedirs(os.path.dirname(summary_path), exist_ok=True)
-if not os.path.exists(summary_path):
-    pd.DataFrame(columns=[
-        "dataset", "model_identifier", "population_size", "generations",
-        "crossover_rate", "mutation_rate", "techniques", "model_used",
-        "fitness", "fairness_score", "performance_score", "elapsed_seconds", "error"
-    ]).to_csv(summary_path, index=False)
-
-try:
-    row = {
-        "dataset": dataset_path,
-        "model_identifier": model_used,
-        "population_size": 10,
-        "generations": 5,
-        "crossover_rate": None,
-        "mutation_rate": None,
-        "techniques": str(techniques),
-        "model_used": str(model_used),
-        "fitness": fitness_value,
-        "fairness_score": fairness_score,
-        "performance_score": performance_score,
-        "elapsed_seconds": None,
-        "error": None
-    }
-    pd.DataFrame([row]).to_csv(summary_path, mode='a', header=False, index=False)
-except Exception as e:
-    print(f"Failed to append single-run result to {summary_path}: {e}")
+    return results
 
 
-"""
 if __name__ == "__main__":
-    
-    Automated main:
-      - iterate over a list of datasets (path + protected attribute + target)
-      - for each dataset, iterate over models
-      - sweep population_size and generations over [25,50,100,250,500]
-      - sweep crossover_rate and mutation_rate over [0.25,0.5,0.75,1.0]
-      - log results to CSV in output_dir
-    Edit the `datasets` and `models` lists below to match your project.
-
-
-    # Configuration: edit these entries to match your datasets and columns
+    # Simplified automated runner for the 3 datasets (adult, german, heart)
     datasets = [
         {
-            "path": "datasets/adult_processed.csv",             
-            "protected_attribute": "sex",   
-            "target_column": "Probability",           
-            "output_dir": "output/adult_sex_results"     
+            'name': 'adult',
+            'path': 'datasets/adult.csv',
+            'preparer': prepare_adult,
+            'protected_attributes': ['race', 'sex'],
+            'target': 'salary'
         },
         {
-            "path": "datasets/adult_processed.csv",             
-            "protected_attribute": "race",   
-            "target_column": "Probability",           
-            "output_dir": "output/adult_race_results"     
+            'name': 'german',
+            'path': 'datasets/german.csv',
+            'preparer': prepare_german,
+            'protected_attributes': ['sex', 'age'],
+            'target': 'Target'
         },
         {
-            "path": "datasets/german_processed.csv",             
-            "protected_attribute": "sex",   
-            "target_column": "Probability",           
-            "output_dir": "output/german_sex_results"     
-        },
-        {
-            "path": "datasets/german_processed.csv",             
-            "protected_attribute": "age",   
-            "target_column": "Probability",           
-            "output_dir": "output/german_age_results"     
-        },
-        {
-            "path": "datasets/heart_processed.csv",             
-            "protected_attribute": "sex",   
-            "target_column": "num",           
-            "output_dir": "output/heart_results"     
-        },
-        {
-            "path": "datasets/heart_processed.csv",             
-            "protected_attribute": "age",   
-            "target_column": "num",           
-            "output_dir": "output/heart_age_results"     
+            'name': 'heart',
+            'path': 'datasets/heart.csv',
+            'preparer': prepare_heart,
+            'protected_attributes': ['sex', 'age'],
+            'target': 'num'
         }
-        # Add more dataset entries as needed:
-        # {"path": "Dataset/other.csv", "protected_attribute": "protected_col", "target_column": "target", "output_dir": "Output/other_results"}
     ]
 
-    # Models to evaluate (these are model identifier strings consumed by your genetic_algorithm)
-    models = ["rf", "lr", "svc", "xgb"]  
+    models = ['rf', 'lr', 'svc', 'xgb']
 
-    # Parameter grids
-    sweep_sizes = [25, 50, 100, 250, 500]  # used for both population_size and generations
-    rates = [0.25, 0.5, 0.75, 1.0]         # for crossover_rate and mutation_rate
-
-    # Other defaults
-    sample_fraction = 1  # sample fraction for dataset sampling
-    overall_results = []
-    
-    # progressive results file (will be appended to after every run)
-    summary_path = os.path.join("output", "experiments_results.csv")
+    # results file (progressive append)
+    summary_path = os.path.join('output', 'experiments_results.csv')
     os.makedirs(os.path.dirname(summary_path), exist_ok=True)
-    # write header if file does not exist
     if not os.path.exists(summary_path):
         pd.DataFrame(columns=[
-            "dataset", "model_identifier", "population_size", "generations",
-            "crossover_rate", "mutation_rate", "techniques", "model_used",
-            "fitness", "fairness_score", "performance_score", "elapsed_seconds", "error"
+            'dataset', 'model_identifier', 'protected_attribute', 'population_size', 'generations',
+            'alpha', 'beta',
+            'techniques', 'model_used', 'fitness', 'fairness_score', 'performance_score', 'elapsed_seconds', 'error'
         ]).to_csv(summary_path, index=False)
 
-    for ds_cfg in datasets:
-        dataset_path = ds_cfg["path"]
-        protected_attribute = ds_cfg["protected_attribute"]
-        target_column = ds_cfg["target_column"]
-        output_dir = ds_cfg.get("output_dir", "Output")
+    
+    sample_fraction = 1
 
-        os.makedirs(output_dir, exist_ok=True)
+    overall_start = time.time()
+
+    for ds in datasets:
+        print(f"\n=== Running dataset: {ds['name']} ({ds['path']}) ===")
+        ds_start = time.time()
         try:
-            dataset = pd.read_csv(dataset_path)
+            raw = pd.read_csv(ds['path'])
         except Exception as e:
-            print(f"Failed to load {dataset_path}: {e}")
+            print(f"Failed to load {ds['path']}: {e}")
             continue
 
-        print(f"Running grid for dataset: {dataset_path}")
+        # dataset-specific cleaning
+        processed = ds['preparer'](raw)
 
-        
-        dataset_sample = sample_dataset(dataset, fraction=sample_fraction)
-        dataset_sample = prepare_data_dataset(dataset_sample, target_column)
+        # sample to keep runs reasonable
+        sample = sample_dataset(processed, fraction=sample_fraction)
 
-        for model_identifier in models:
-            for population_size in sweep_sizes:
-                for generations in sweep_sizes:
-                    for crossover_rate in rates:
-                        for mutation_rate in rates:
-                            run_start = time.time()
-                            try:
-                                # Pass optional GA parameters as kwargs. If your genetic_algorithm
-                                # does not accept some of these kwargs, remove them or update the GA implementation.
-                                best_solution = genetic_algorithm(
-                                    dataset_sample,
-                                    protected_attribute,
-                                    target_column,
-                                    model_identifier,
-                                    generations=generations,
-                                    population_size=population_size,
-                                    alpha=crossover_rate,
-                                    beta=mutation_rate
-                                )
+        # for each protected attribute, run the GA (separate runs)
+        for prot in ds['protected_attributes']:
+            if prot not in sample.columns:
+                print(f"Warning: protected attribute '{prot}' not found in dataset '{ds['name']}' after preparation. Skipping.")
+                continue
 
-                                elapsed = time.time() - run_start
-                                
-                                techniques = best_solution[0] if best_solution and len(best_solution) > 0 else None
-                                model_used = best_solution[1] if best_solution and len(best_solution) > 1 else model_identifier
-                                fitness = best_solution[2] if best_solution and len(best_solution) > 2 else None
+            # ensure model-ready encoding & imputation (do not re-binarize target if preparer already did it)
+            sample_ready = prepare_data_model(sample, ds['target'], protected_attribute=prot, binarize=False)
 
-                                # capture fairness and performance if returned by GA
-                                fairness_score = best_solution[3] if best_solution and len(best_solution) > 3 else None
-                                performance_score = best_solution[4] if best_solution and len(best_solution) > 4 else None
+            # Run GA for all models for this protected attribute across the specified parameter grid
+            population_sizes = [25, 50, 100, 250, 500]
+            generations_list = [25, 50, 100, 250, 500]
+            rates = [0.0, 0.25, 0.5, 0.75, 1.0]  # crossover and mutation rates
 
-                                result = {
-                                    "dataset": dataset_path,
-                                    "model_identifier": model_identifier,
-                                    "population_size": population_size,
-                                    "generations": generations,
-                                    "crossover_rate": crossover_rate,
-                                    "mutation_rate": mutation_rate,
-                                    "techniques": str(techniques),
-                                    "model_used": str(model_used),
-                                    "fitness": fitness,
-                                    "fairness_score": fairness_score,
-                                    "performance_score": performance_score,
-                                    "elapsed_seconds": elapsed
-                                }
-                                overall_results.append(result)
+            for pop in population_sizes:
+                for gen in generations_list:
+                    for alpha in rates:
+                        for beta in rates:
+                            print(f"PARAMS: pop={pop} gen={gen} alpha={alpha} beta={beta}")
+                            execute_fate(sample_ready, ds['name'], ds['path'], prot, ds['target'], models,
+                                         pop, gen, alpha=alpha, beta=beta, summary_path=summary_path)
 
-                                # append this single result immediately to CSV to avoid data loss
-                                try:
-                                    row = result.copy()
-                                    row.setdefault("error", None)
-                                    pd.DataFrame([row]).to_csv(summary_path, mode='a', header=False, index=False)
-                                except Exception as e:
-                                    print(f"Failed to append result to {summary_path}: {e}")
+        # dataset-level timing
+        ds_elapsed = time.time() - ds_start
+        print(f"Dataset '{ds['name']}' elapsed time: {ds_elapsed:.1f} seconds")
 
-                                print(f"OK: model={model_identifier} pop={population_size} gen={generations} cx={crossover_rate} mut={mutation_rate} fitness={fitness}")
 
-                            except Exception as e:
-                                elapsed = time.time() - run_start
-                                print(f"ERROR: model={model_identifier} pop={population_size} gen={generations} cx={crossover_rate} mut={mutation_rate} -> {e}")
-                                err_result = {
-                                    "dataset": dataset_path,
-                                    "model_identifier": model_identifier,
-                                    "population_size": population_size,
-                                    "generations": generations,
-                                    "crossover_rate": crossover_rate,
-                                    "mutation_rate": mutation_rate,
-                                    "techniques": None,
-                                    "model_used": None,
-                                    "fitness": None,
-                                    "elapsed_seconds": elapsed,
-                                    "error": str(e)
-                                }
-                                overall_results.append(err_result)
-                                # append error row immediately as well
-                                try:
-                                    pd.DataFrame([err_result]).to_csv(summary_path, mode='a', header=False, index=False)
-                                except Exception as e2:
-                                    print(f"Failed to append error result to {summary_path}: {e2}")
+    overall_elapsed = time.time() - overall_start
+    print(f"\nAll experiments finished. Results appended to {summary_path}")
+    print(f"Total experiments elapsed time: {overall_elapsed:.1f} seconds")
 
-    # Final save (overwrite with aggregated results) - optional but kept to ensure the full dataframe
-    try:
-        results_df = pd.DataFrame(overall_results)
-        results_df.to_csv(summary_path, index=False)
-        print(f"Experiments complete. Results saved to: {summary_path}")
-    except Exception as e:
-        print(f"Failed to write final aggregated results to {summary_path}: {e}")
-    """

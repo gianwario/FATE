@@ -29,7 +29,7 @@ def genetic_algorithm(dataset, protected_attribute, target_column, model, genera
 
     # Define potential techniques for optimization
     techniques = [
-        'onehot_standard', 'stratified_sampling', 'oversampling', 'undersampling',
+        'standard', 'stratified_sampling', 'oversampling', 'undersampling',
         'clustering', 'ipw', 'matching', 'min_max_scaling'
     ]
 
@@ -123,8 +123,8 @@ def genetic_algorithm(dataset, protected_attribute, target_column, model, genera
 
         print(f"End of generation {generation + 1}")
 
-    # Select the best solution based on the lowest fitness score (consistent with selection above)
-    best_solution = min(fitness_scores, key=lambda x: x[2])
+    # Select the best solution based on the highest fitness score 
+    best_solution = max(fitness_scores, key=lambda x: x[2])
     # best_solution is (techniques, model, fitness_value, fairness_score, performance_score)
     print(f"Best solution: Techniques={best_solution[0]}, Model={best_solution[1]}, Fitness={best_solution[2]}, Fairness={best_solution[3]}, Performance={best_solution[4]}")
     return best_solution
