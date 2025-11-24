@@ -6,7 +6,8 @@ from sklearn.metrics import accuracy_score, average_precision_score
 from sklearn.model_selection import train_test_split, StratifiedKFold, KFold
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.svm import SVC
+# from sklearn.svm import SVC
+from sklearn.svm import LinearSVC
 from xgboost import XGBClassifier
 from preprocessing import prepare_data_model
 
@@ -164,6 +165,10 @@ def fitness(data, technique, model, protected_attribute, target_column, perf_wei
 
     # Prepare data for modeling (centralized preprocessing)
     data = prepare_data_model(data, target_column, protected_attribute)
+
+    # Consolidate in case preprocessing built a fragmented DataFrame (speeds up training ops)
+    data = data.copy()
+
     # Build X and y from processed dataframe
     y = data[target_column]
     X = data.drop(columns=[target_column])
@@ -191,8 +196,7 @@ def fitness(data, technique, model, protected_attribute, target_column, perf_wei
         y = y_series
 
     # Always use K-fold cross-validation so the whole dataset is used for evaluation.
-    # Default number of folds is 5 but we reduce it automatically if classes are small.
-    requested_folds = 5
+    n_splits = 5
 
     # Determine per-class counts to choose a safe number of splits for stratification
     y_nonnull = y.dropna()
@@ -201,12 +205,6 @@ def fitness(data, technique, model, protected_attribute, target_column, perf_wei
         print(f"[fitness] only one class present after preprocessing; cannot perform K-fold CV. unique={pd.unique(y)}")
         return float('inf'), None, None
 
-    # The maximum number of splits possible for stratified KFold is limited by the smallest class count
-    max_splits = int(class_counts.min())
-    n_splits = min(requested_folds, max_splits)
-    if n_splits < 2:
-        print(f"[fitness] insufficient samples in minority class to perform K-fold CV (min_count={max_splits})")
-        return float('inf'), None, None
 
     # prefer stratified folds for classification
     try:
@@ -229,13 +227,15 @@ def fitness(data, technique, model, protected_attribute, target_column, perf_wei
 
         # instantiate classifier per-fold to avoid carrying state
         if model == 'lr':
-            classifier = LogisticRegression(max_iter=1000, solver='liblinear')
+            classifier = LogisticRegression(max_iter=1000, solver='saga', penalty='l2', random_state=42, n_jobs=1)
         elif model == 'rf':
-            classifier = RandomForestClassifier()
+            classifier = RandomForestClassifier(n_estimators=100, max_depth=12, n_jobs=1, random_state=42)
         elif model == 'svc':
-            classifier = SVC(probability=True)
+            classifier = LinearSVC(dual=False, max_iter=10000, tol=1e-4, random_state=42)
         elif model == 'xgb':
-            classifier = XGBClassifier(use_label_encoder=False, eval_metric='logloss')
+            classifier = XGBClassifier(use_label_encoder=False, eval_metric='logloss',
+                                       n_estimators=100, tree_method='hist',
+                                       verbosity=0, random_state=42, n_jobs=1)
         else:
             raise ValueError(f"Unknown model identifier: {model}")
 

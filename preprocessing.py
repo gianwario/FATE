@@ -114,7 +114,11 @@ def prepare_data_model(df, target_column, protected_attribute=None, binarize=Tru
     if binarize:
         df = binarize_target(df, target_column)
     df = encode_and_impute(df, protected_attribute=protected_attribute)
-    return df
+
+    # Consolidate fragmented blocks into a single contiguous block to avoid fragmentation warnings
+    processed = df.copy()
+
+    return processed
 
 
 def prepare_adult(df):

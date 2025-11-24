@@ -1,8 +1,8 @@
 import pandas as pd
 from genetic_algorithm import genetic_algorithm
-from preprocessing import sample_dataset, prepare_data_model, prepare_adult, prepare_german, prepare_heart
 import os
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 def get_user_input():
     """
@@ -131,21 +131,21 @@ if __name__ == "__main__":
         {
             'name': 'adult',
             'path': 'datasets/adult.csv',
-            'preparer': prepare_adult,
+            'preparer_name': 'prepare_adult',
             'protected_attributes': ['race', 'sex'],
             'target': 'salary'
         },
         {
             'name': 'german',
             'path': 'datasets/german.csv',
-            'preparer': prepare_german,
+            'preparer_name': 'prepare_german',
             'protected_attributes': ['sex', 'age'],
             'target': 'Target'
         },
         {
             'name': 'heart',
             'path': 'datasets/heart.csv',
-            'preparer': prepare_heart,
+            'preparer_name': 'prepare_heart',
             'protected_attributes': ['sex', 'age'],
             'target': 'num'
         }
@@ -163,52 +163,115 @@ if __name__ == "__main__":
             'techniques', 'model_used', 'fitness', 'fairness_score', 'performance_score', 'elapsed_seconds', 'error'
         ]).to_csv(summary_path, index=False)
 
-    
     sample_fraction = 1
-
     overall_start = time.time()
 
-    for ds in datasets:
-        print(f"\n=== Running dataset: {ds['name']} ({ds['path']}) ===")
-        ds_start = time.time()
+    # parameter grid
+    population_sizes = [25, 50, 100, 250]
+    generations_list = [25, 50, 100, 250]
+    rates = [0.0, 0.25, 0.5, 0.75, 1.0]  # crossover and mutation rates
+
+    # helper worker that runs the GA for one parameter combination and returns rows (no file IO)
+    def worker_task(ds_cfg, prot, pop, gen, alpha, beta):
+        # run inside worker process: load, prepare, sample, prepare for model, call execute_fate
+        import pandas as _pd
+        from preprocessing import prepare_data_model as _prepare_data_model
+        import preprocessing as _preproc
+
+        # load and prepare dataset
+        raw = _pd.read_csv(ds_cfg['path'])
+        preparer = getattr(_preproc, ds_cfg['preparer_name'])
+        processed = preparer(raw)
+        sample = processed
+
+        if prot not in sample.columns:
+            # return an error row for each model so parent can append
+            rows = []
+            for m in models:
+                rows.append({
+                    'dataset': ds_cfg['path'],
+                    'model_identifier': m,
+                    'protected_attribute': prot,
+                    'population_size': pop,
+                    'generations': gen,
+                    'alpha': alpha,
+                    'beta': beta,
+                    'techniques': None,
+                    'model_used': None,
+                    'fitness': None,
+                    'fairness_score': None,
+                    'performance_score': None,
+                    'elapsed_seconds': 0.0,
+                    'error': f"protected attribute '{prot}' not found after preparation"
+                })
+            return rows
+
+        sample_ready = _prepare_data_model(sample, ds_cfg['target'], protected_attribute=prot, binarize=False)
+
+        # call execute_fate but don't let worker write CSV; return the rows instead
         try:
-            raw = pd.read_csv(ds['path'])
+            rows = execute_fate(sample_ready, ds_cfg['name'], ds_cfg['path'], prot, ds_cfg['target'], models,
+                                population_size=pop, generations=gen, alpha=alpha, beta=beta, summary_path=None)
+            return rows
         except Exception as e:
-            print(f"Failed to load {ds['path']}: {e}")
-            continue
+            # return error rows for each model on failure
+            rows = []
+            for m in models:
+                rows.append({
+                    'dataset': ds_cfg['path'],
+                    'model_identifier': m,
+                    'protected_attribute': prot,
+                    'population_size': pop,
+                    'generations': gen,
+                    'alpha': alpha,
+                    'beta': beta,
+                    'techniques': None,
+                    'model_used': None,
+                    'fitness': None,
+                    'fairness_score': None,
+                    'performance_score': None,
+                    'elapsed_seconds': 0.0,
+                    'error': str(e)
+                })
+            return rows
 
-        # dataset-specific cleaning
-        processed = ds['preparer'](raw)
+    # set environment to avoid BLAS/OMP oversubscription (important)
+    os.environ.setdefault('OMP_NUM_THREADS', '1')
+    os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+    os.environ.setdefault('MKL_NUM_THREADS', '1')
+    os.environ.setdefault('VECLIB_MAXIMUM_THREADS', '1')
+    os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
 
-        # sample to keep runs reasonable
-        sample = sample_dataset(processed, fraction=sample_fraction)
+    # choose how many processes to run in parallel
+    max_workers = 50
 
-        # for each protected attribute, run the GA (separate runs)
+    # build list of tasks (ds_cfg, prot, pop, gen, alpha, beta)
+    tasks = []
+    for ds in datasets:
         for prot in ds['protected_attributes']:
-            if prot not in sample.columns:
-                print(f"Warning: protected attribute '{prot}' not found in dataset '{ds['name']}' after preparation. Skipping.")
-                continue
-
-            # ensure model-ready encoding & imputation (do not re-binarize target if preparer already did it)
-            sample_ready = prepare_data_model(sample, ds['target'], protected_attribute=prot, binarize=False)
-
-            # Run GA for all models for this protected attribute across the specified parameter grid
-            population_sizes = [25, 50, 100, 250, 500]
-            generations_list = [25, 50, 100, 250, 500]
-            rates = [0.0, 0.25, 0.5, 0.75, 1.0]  # crossover and mutation rates
-
             for pop in population_sizes:
                 for gen in generations_list:
                     for alpha in rates:
                         for beta in rates:
-                            print(f"PARAMS: pop={pop} gen={gen} alpha={alpha} beta={beta}")
-                            execute_fate(sample_ready, ds['name'], ds['path'], prot, ds['target'], models,
-                                         pop, gen, alpha=alpha, beta=beta, summary_path=summary_path)
+                            tasks.append((ds, prot, pop, gen, alpha, beta))
 
-        # dataset-level timing
-        ds_elapsed = time.time() - ds_start
-        print(f"Dataset '{ds['name']}' elapsed time: {ds_elapsed:.1f} seconds")
+    print(f"Starting parallel run with up to {max_workers} workers, total tasks: {len(tasks)}")
 
+    # submit tasks and write results progressively in the parent process
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        future_to_task = {executor.submit(worker_task, *t): t for t in tasks}
+        for fut in as_completed(future_to_task):
+            ds_cfg, prot, pop, gen, alpha, beta = future_to_task[fut]
+            try:
+                rows = fut.result()
+                # append rows to CSV (parent process writes)
+                if rows:
+                    _df = pd.DataFrame(rows)
+                    _df.to_csv(summary_path, mode='a', header=False, index=False)
+                    for r in rows:
+                        print(f"APPENDED: ds={ds_cfg['name']} prot={prot} model={r['model_identifier']} pop={pop} gen={gen} alpha={alpha} beta={beta} err={r['error']}")
+            except Exception as exc:
+                print(f"Task failed for ds={ds_cfg['name']} prot={prot} pop={pop} gen={gen} alpha={alpha} beta={beta} -> {exc}")
 
     overall_elapsed = time.time() - overall_start
     print(f"\nAll experiments finished. Results appended to {summary_path}")
