@@ -1,8 +1,16 @@
+import os
+
+# set env vars BEFORE importing numpy/pandas/sklearn/xgboost etc.
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+os.environ.setdefault('MKL_NUM_THREADS', '1')
+os.environ.setdefault('VECLIB_MAXIMUM_THREADS', '1')
+os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
+
 import pandas as pd
 from genetic_algorithm import genetic_algorithm
-import os
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def get_user_input():
     """
@@ -167,12 +175,20 @@ if __name__ == "__main__":
     overall_start = time.time()
 
     # parameter grid
-    population_sizes = [25, 50, 100, 250]
-    generations_list = [25, 50, 100, 250]
-    rates = [0.0, 0.25, 0.5, 0.75, 1.0]  # crossover and mutation rates
+    population_sizes = [5, 10, 15, 20]
+    generations_list = [5, 10, 15, 20]
+    rates = [0, 1]  # crossover and mutation rates
 
     # helper worker that runs the GA for one parameter combination and returns rows (no file IO)
     def worker_task(ds_cfg, prot, pop, gen, alpha, beta):
+        # ensure worker limits BLAS/OMP threads before importing heavy libs
+        import os as _os
+        _os.environ.setdefault('OMP_NUM_THREADS', '1')
+        _os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+        _os.environ.setdefault('MKL_NUM_THREADS', '1')
+        _os.environ.setdefault('VECLIB_MAXIMUM_THREADS', '1')
+        _os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
+
         # run inside worker process: load, prepare, sample, prepare for model, call execute_fate
         import pandas as _pd
         from preprocessing import prepare_data_model as _prepare_data_model
@@ -235,15 +251,15 @@ if __name__ == "__main__":
                 })
             return rows
 
-    # set environment to avoid BLAS/OMP oversubscription (important)
+    # set environment to avoid BLAS/OMP oversubscription
     os.environ.setdefault('OMP_NUM_THREADS', '1')
     os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
     os.environ.setdefault('MKL_NUM_THREADS', '1')
     os.environ.setdefault('VECLIB_MAXIMUM_THREADS', '1')
     os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
 
-    # choose how many processes to run in parallel
-    max_workers = 50
+    # choose how many threads to run in parallel
+    max_workers = 64
 
     # build list of tasks (ds_cfg, prot, pop, gen, alpha, beta)
     tasks = []
@@ -258,7 +274,7 @@ if __name__ == "__main__":
     print(f"Starting parallel run with up to {max_workers} workers, total tasks: {len(tasks)}")
 
     # submit tasks and write results progressively in the parent process
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_task = {executor.submit(worker_task, *t): t for t in tasks}
         for fut in as_completed(future_to_task):
             ds_cfg, prot, pop, gen, alpha, beta = future_to_task[fut]

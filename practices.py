@@ -38,7 +38,7 @@ def apply_standard_transformation(data, protected_attribute):
         df[protected_attribute] = protected.values
 
     print(f"Transformation: Standard Scaling for numeric columns completed (protected '{protected_attribute}' preserved).")
-    return df
+    return df.copy()
 
 # Function for stratified sampling to balance the dataset
 def apply_stratified_sampling(data, protected_attribute):
@@ -80,7 +80,7 @@ def apply_stratified_sampling(data, protected_attribute):
     print(f"Transformation: Stratified Sampling for '{protected_attribute}' completed.")
 
     
-    return balanced_dataset
+    return balanced_dataset.copy()
 
 # Function for oversampling to ensure equal representation
 def apply_oversampling(data, protected_attribute):
@@ -99,7 +99,7 @@ def apply_oversampling(data, protected_attribute):
     # Shuffle the balanced DataFrame
     balanced_df = balanced_df.sample(frac=1, random_state=123).reset_index(drop=True)
     print(f"Transformation: Oversampling for Fairness for {protected_attribute}")
-    return balanced_df
+    return balanced_df.copy()
 
 # Function for undersampling to ensure equal representation
 def apply_undersampling(data, protected_attribute):
@@ -119,7 +119,7 @@ def apply_undersampling(data, protected_attribute):
     balanced_df = balanced_df.sample(frac=1, random_state=123).reset_index(drop=True)
     print(f"Transformation: Undersampling for Fairness for {protected_attribute}")
     
-    return balanced_df
+    return balanced_df.copy()
 
 # Function for applying KMeans clustering
 def apply_clustering(data, protected_attribute, n_clusters=2):
@@ -138,7 +138,7 @@ def apply_clustering(data, protected_attribute, n_clusters=2):
     clustered_data['Cluster'] = cluster_labels
     print(f"Transformation: Clustering for {protected_attribute}")
     
-    return clustered_data
+    return clustered_data.copy()
 
 # Function for applying Inverse Probability Weighting (IPW)
 def apply_ipw(data, protected_attribute):
@@ -165,7 +165,7 @@ def apply_matching(data, protected_attribute):
     matched_data = data.sample(frac=1, random_state=42)
     print(f"Transformation: Matching for {protected_attribute}")
     
-    return matched_data
+    return matched_data.copy()
 
 # Function for applying Min-Max scaling
 def apply_min_max_scaling(data, protected_attribute):
@@ -178,7 +178,7 @@ def apply_min_max_scaling(data, protected_attribute):
     data[numeric_columns] = MinMaxScaler().fit_transform(data[numeric_columns])
     print(f"Transformation: Min-Max Scaling for {protected_attribute}")
     
-    return data
+    return data.copy()
 
 # Function to apply a specified preprocessing technique
 def apply_techniques(data, technique, protected_attribute):

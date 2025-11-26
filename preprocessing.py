@@ -55,8 +55,8 @@ def encode_and_impute(df, protected_attribute=None):
     # reattach protected attribute at the end
     if protected is not None:
         df[protected_attribute] = protected.reset_index(drop=True)
-
-    return df
+    new = df.copy()
+    return new
 
 
 def binarize_target(df, target_column, positive_values=None, threshold=None):
@@ -93,9 +93,9 @@ def binarize_target(df, target_column, positive_values=None, threshold=None):
         mapping = {unique_vals[0]: 0, unique_vals[1]: 1}
         df[target_column] = df[target_column].map(mapping).astype(int)
         return df
-
+    new = df.copy()
     # otherwise leave as-is (calling code should handle)
-    return df
+    return new
 
 
 def prepare_data_model(df, target_column, protected_attribute=None, binarize=True):
@@ -116,9 +116,9 @@ def prepare_data_model(df, target_column, protected_attribute=None, binarize=Tru
     df = encode_and_impute(df, protected_attribute=protected_attribute)
 
     # Consolidate fragmented blocks into a single contiguous block to avoid fragmentation warnings
-    processed = df.copy()
+    new = df.copy()
 
-    return processed
+    return new
 
 
 def prepare_adult(df):
@@ -151,8 +151,8 @@ def prepare_adult(df):
     # Race should be 0/1 already per your note; coerce to numeric
     if 'race' in data.columns:
         data['race'] = pd.to_numeric(data['race'], errors='coerce')
-
-    return data
+    new = data.copy()
+    return new
 
 
 def prepare_german(df):
@@ -191,8 +191,8 @@ def prepare_german(df):
     if 'Target' in data.columns:
         data['Target'] = pd.to_numeric(data['Target'], errors='coerce')
         data['Target'] = data['Target'].map(lambda x: 1 if x == 2 else 0 if x == 1 else x)
-
-    return data
+    new = data.copy()
+    return new
 
 
 def prepare_heart(df):
@@ -211,6 +211,6 @@ def prepare_heart(df):
     if 'num' in data.columns:
         data['num'] = pd.to_numeric(data['num'], errors='coerce')
         data['num'] = data['num'].map(lambda x: 1 if pd.notna(x) and x > 0 else 0)
-
-    return data
+    new = data.copy()
+    return new
 

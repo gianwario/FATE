@@ -14,7 +14,70 @@ from preprocessing import prepare_data_model
 from practices import apply_techniques
 from aif360.datasets import BinaryLabelDataset
 from aif360.metrics import ClassificationMetric
+import os
+import threading
+import csv
+import json
+import time
 
+# Simple CSV cache (matches on model / protected_attribute / target_column / techniques set)
+SIMPLE_CACHE_PATH = os.path.join(os.path.dirname(__file__), "fitness_simple_cache.csv")
+simple_cache_lock = threading.Lock()
+simple_cache = {}  # key -> (fitness, fairness, performance, row_dict)
+
+def _make_simple_key(model, protected_attribute, target_column, technique):
+    # Convert technique to a frozenset to ignore order
+    if isinstance(technique, (list, tuple)):
+        tech_repr = frozenset(technique)
+    else:
+        tech_repr = frozenset([technique]) if technique else frozenset()
+    
+    return (str(model), str(protected_attribute), str(target_column), tech_repr)
+
+def _load_simple_cache():
+    if not os.path.exists(SIMPLE_CACHE_PATH):
+        return
+    try:
+        with open(SIMPLE_CACHE_PATH, newline='', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                key = (r.get('model',''), r.get('protected_attribute',''), r.get('target_column',''), frozenset(json.loads(r.get('techniques',''))))
+                try:
+                    fitness = float(r.get('fitness')) if r.get('fitness') not in (None,'') else None
+                    fairness = float(r.get('fairness')) if r.get('fairness') not in (None,'') else None
+                    performance = float(r.get('performance')) if r.get('performance') not in (None,'') else None
+                except Exception:
+                    fitness = fairness = performance = None
+                simple_cache[key] = (fitness, fairness, performance, r)
+    except Exception:
+        # ignore corrupt cache file
+        return
+
+def _append_simple_cache_row(model, protected_attribute, target_column, technique, fitness, fairness, performance):
+    header = ['timestamp','model','protected_attribute','target_column','techniques','fitness','fairness','performance','extra']
+    row = {
+        'timestamp': str(time.time()),
+        'model': str(model),
+        'protected_attribute': str(protected_attribute),
+        'target_column': str(target_column),
+        'techniques': json.dumps(list(technique), default=str, separators=(',',':')),  # Convert frozenset back to list for CSV
+        'fitness': '' if fitness is None else str(fitness),
+        'fairness': '' if fairness is None else str(fairness),
+        'performance': '' if performance is None else str(performance),
+        'extra': ''
+    }
+    with simple_cache_lock:
+        first = not os.path.exists(SIMPLE_CACHE_PATH)
+        with open(SIMPLE_CACHE_PATH, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=header)
+            if first:
+                writer.writeheader()
+            writer.writerow(row)
+        key = _make_simple_key(model, protected_attribute, target_column, technique)
+        simple_cache[key] = (fitness, fairness, performance, row)
+
+# load simple cache at import time
+_load_simple_cache()
 
 def fairness_metrics(test_data, test_indices, protected_attribute, predictions, target_column):
     """
@@ -116,7 +179,7 @@ def fairness_metrics(test_data, test_indices, protected_attribute, predictions, 
         metric = ClassificationMetric(dataset_true, dataset_pred, unprivileged_groups=unprivileged_groups, privileged_groups=privileged_groups)
         spd = metric.statistical_parity_difference()
         eod = metric.equal_opportunity_difference()
-        di = metric.disparate_impact()
+        di = 1 - metric.disparate_impact()
     except Exception as e:
         print(f"[fairness_metrics] ClassificationMetric computation failed: {e}")
         print("protected (bin) counts:", df_true['__prot_bin__'].value_counts(dropna=False).to_dict())
@@ -125,14 +188,12 @@ def fairness_metrics(test_data, test_indices, protected_attribute, predictions, 
         return {'statistical_parity': np.nan, 'equal_opportunity': np.nan, 'disparate_impact': np.nan}
 
     return {
-        'statistical_parity': float(spd) if spd is not None else np.nan,
-        'equal_opportunity': float(eod) if eod is not None else np.nan,
-        'disparate_impact': float(di) if di is not None else np.nan
+        'statistical_parity': float(abs(spd)) if spd is not None else np.nan,
+        'equal_opportunity': float(abs(eod)) if eod is not None else np.nan,
+        'disparate_impact': float(abs(di)) if di is not None else np.nan
     }
 
     
-
-
 def fitness(data, technique, model, protected_attribute, target_column, perf_weight=0.5, fair_weight=0.5):
     """
     Evaluate the fitness of a model based on performance and fairness.
@@ -149,6 +210,16 @@ def fitness(data, technique, model, protected_attribute, target_column, perf_wei
     Returns:
         float: The fitness value computed as (alpha * PS - beta * FS).
     """
+    # SIMPLE CSV LOOKUP: if present, return stored values immediately
+    key = _make_simple_key(model, protected_attribute, target_column, technique)
+    with simple_cache_lock:
+        cached = simple_cache.get(key)
+        print(cached)
+    if cached and cached[0] is not None:
+        print(f"[fitness] cache hit for key={key}")
+        return cached[0], cached[1], cached[2]
+    
+    
     # If technique is a list/tuple, apply each technique in sequence; if a single technique, apply it
     if isinstance(technique, (list, tuple)):
         for t in technique:
@@ -206,11 +277,8 @@ def fitness(data, technique, model, protected_attribute, target_column, perf_wei
         return float('inf'), None, None
 
 
-    # prefer stratified folds for classification
-    try:
-        kf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-    except Exception:
-        kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+    # folds for classification
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
 
     perf_scores = []
     fair_scores = []
@@ -286,9 +354,19 @@ def fitness(data, technique, model, protected_attribute, target_column, perf_wei
 
     # aggregate across folds (ignore NaNs)
     performance_score = float(np.nanmean(perf_scores))
-    fairness_score = float(np.nanmean(fair_scores)) if len(fair_scores) > 0 else 0.0
+    #/3 to normalize fairness score to [0,1]
+    fairness_score = (float(np.nanmean(fair_scores))/3) if len(fair_scores) > 0 else 0.0
 
     fitness_value = (perf_weight * performance_score) - (fair_weight * fairness_score)
+    print("*******************values*******************")
+    print(fitness_value, performance_score, fairness_score)
+
+    # append to simple CSV cache (best-effort; do not fail GA on cache errors)
+    try:
+        _append_simple_cache_row(model, protected_attribute, target_column, technique, fitness_value, fairness_score, performance_score)
+    except Exception:
+        pass
+
     return fitness_value, fairness_score, performance_score
 
 
