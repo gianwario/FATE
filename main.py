@@ -177,7 +177,7 @@ if __name__ == "__main__":
     # parameter grid
     population_sizes = [5, 10, 15, 20]
     generations_list = [5, 10, 15, 20]
-    rates = [0, 1]  # crossover and mutation rates
+    rates = [0, 0.25, 0.50, 0.75, 1]  # crossover and mutation rates
 
     # helper worker that runs the GA for one parameter combination and returns rows (no file IO)
     def worker_task(ds_cfg, prot, pop, gen, alpha, beta):
