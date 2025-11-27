@@ -175,8 +175,8 @@ if __name__ == "__main__":
     overall_start = time.time()
 
     # parameter grid
-    population_sizes = [5, 10, 15, 20]
-    generations_list = [5, 10, 15, 20]
+    population_sizes = [5, 10, 15, 20, 50]
+    generations_list = [5, 10, 15, 20, 50]
     rates = [0, 0.25, 0.50, 0.75, 1]  # crossover and mutation rates
 
     # helper worker that runs the GA for one parameter combination and returns rows (no file IO)
