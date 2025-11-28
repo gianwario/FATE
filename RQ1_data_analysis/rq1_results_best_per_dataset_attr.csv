@@ -1,7 +1,7 @@
 dataset,model_identifier,protected_attribute,population_size,generations,alpha,beta,techniques,model_used,fitness,fairness_score,performance_score,elapsed_seconds,error
-datasets/german.csv,rf,age,50,5,1.0,1.0,"['oversampling', 'min_max_scaling', 'ipw', 'clustering']",rf,0.491396420156522,0.013225299869502,0.996018140182546,4.587910413742065,
-datasets/heart.csv,lr,age,50,20,0.25,1.0,"['stratified_sampling', 'standard', 'undersampling']",lr,0.4756944444444444,0.0486111111111111,1.0,15.749723196029665,
-datasets/adult.csv,rf,race,5,15,0.5,0.75,"['oversampling', 'undersampling', 'clustering', 'stratified_sampling', 'min_max_scaling', 'standard']",rf,0.4711425587281883,0.0445395876983435,0.98682470515472,9.51943039894104,
-datasets/german.csv,rf,sex,5,50,0.0,0.25,"['matching', 'undersampling', 'stratified_sampling', 'oversampling', 'min_max_scaling', 'ipw']",rf,0.4479584920932694,0.0743410175348355,0.9702580017213744,18.9573335647583,
-datasets/adult.csv,rf,sex,5,10,0.25,0.5,"['oversampling', 'standard', 'undersampling', 'clustering']",rf,0.432776382296821,0.1177017079559523,0.9832544725495944,6.1351964473724365,
-datasets/heart.csv,lr,sex,20,5,0.5,1.0,"['matching', 'clustering', 'stratified_sampling', 'oversampling', 'undersampling']",lr,0.4180857932704911,0.0871464460318949,0.9233180325728771,1.6793229579925537,
+datasets/german.csv,rf,age,100,15,0.0,1.0,"['oversampling', 'ipw', 'min_max_scaling', 'clustering']",rf,0.491396420156522,0.013225299869502,0.996018140182546,23.3060622215271,
+datasets/heart.csv,lr,age,5,20,0.5,1.0,"['stratified_sampling', 'undersampling', 'standard']",lr,0.4756944444444444,0.0486111111111111,1.0,1.5371103286743164,
+datasets/adult.csv,rf,race,50,20,0.5,0.5,"['oversampling', 'min_max_scaling', 'undersampling', 'stratified_sampling', 'clustering', 'standard']",rf,0.4711425587281883,0.0445395876983435,0.98682470515472,119.16526460647584,
+datasets/german.csv,rf,sex,100,5,0.0,1.0,"['matching', 'ipw', 'undersampling', 'stratified_sampling', 'min_max_scaling', 'oversampling']",rf,0.4479584920932694,0.0743410175348355,0.9702580017213744,7.59637713432312,
+datasets/adult.csv,rf,sex,50,5,0.25,0.5,"['standard', 'clustering', 'undersampling', 'oversampling']",rf,0.432776382296821,0.1177017079559523,0.9832544725495944,30.37454319000244,
+datasets/heart.csv,lr,sex,100,15,0.0,1.0,"['clustering', 'oversampling', 'undersampling', 'stratified_sampling', 'matching']",lr,0.4180857932704911,0.0871464460318949,0.9233180325728771,21.945013523101807,

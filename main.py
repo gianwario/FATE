@@ -136,20 +136,20 @@ def execute_fate(sample_ready, ds_name, ds_path, protected_attribute, target, mo
 if __name__ == "__main__":
     # Simplified automated runner for the 3 datasets (adult, german, heart)
     datasets = [
-        {
-            'name': 'adult',
-            'path': 'datasets/adult.csv',
-            'preparer_name': 'prepare_adult',
-            'protected_attributes': ['race', 'sex'],
-            'target': 'salary'
-        },
-        {
-            'name': 'german',
-            'path': 'datasets/german.csv',
-            'preparer_name': 'prepare_german',
-            'protected_attributes': ['sex', 'age'],
-            'target': 'Target'
-        },
+        #{
+        #    'name': 'adult',
+        #    'path': 'datasets/adult.csv',
+        #    'preparer_name': 'prepare_adult',
+        #    'protected_attributes': ['race', 'sex'],
+        #    'target': 'salary'
+        #},
+        #{
+        #    'name': 'german',
+        #    'path': 'datasets/german.csv',
+        #    'preparer_name': 'prepare_german',
+        #    'protected_attributes': ['sex', 'age'],
+        #    'target': 'Target'
+        #},
         {
             'name': 'heart',
             'path': 'datasets/heart.csv',
@@ -175,8 +175,8 @@ if __name__ == "__main__":
     overall_start = time.time()
 
     # parameter grid
-    population_sizes = [5, 10, 15, 20, 50]
-    generations_list = [5, 10, 15, 20, 50]
+    population_sizes = [5, 10, 15, 20, 50, 100]
+    generations_list = [5, 10, 15, 20, 50, 100]
     rates = [0, 0.25, 0.50, 0.75, 1]  # crossover and mutation rates
 
     # helper worker that runs the GA for one parameter combination and returns rows (no file IO)
