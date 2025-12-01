@@ -21,7 +21,7 @@ import json
 import time
 
 # Simple CSV cache (matches on model / protected_attribute / target_column / techniques set)
-SIMPLE_CACHE_PATH = os.path.join(os.path.dirname(__file__), "fitness_simple_cache.csv")
+SIMPLE_CACHE_PATH = os.path.join(os.path.dirname(__file__), "experiments_cache.csv")
 simple_cache_lock = threading.Lock()
 simple_cache = {}  # key -> (fitness, fairness, performance, row_dict)
 
@@ -75,6 +75,49 @@ def _append_simple_cache_row(model, protected_attribute, target_column, techniqu
             writer.writerow(row)
         key = _make_simple_key(model, protected_attribute, target_column, technique)
         simple_cache[key] = (fitness, fairness, performance, row)
+
+def clear_simple_cache(remove_file=True, recreate=False):
+    """
+    Clears the in-memory and on-disk simple cache.
+
+    Args:
+        remove_file (bool): If True, delete the CSV cache file.
+        recreate (bool): If True, recreate an empty CSV file with header after deletion.
+                         Only works if remove_file=True.
+
+    Returns:
+        bool: True if the cache was cleared successfully, False otherwise.
+    """
+    global simple_cache
+
+    with simple_cache_lock:
+        # 1 — clear in-memory entries
+        simple_cache.clear()
+
+        # 2 — optionally remove the CSV file
+        if remove_file and os.path.exists(SIMPLE_CACHE_PATH):
+            try:
+                os.remove(SIMPLE_CACHE_PATH)
+            except Exception as e:
+                print(f"[clear_simple_cache] Could not remove file: {e}")
+                return False
+
+        # 3 — optionally recreate the file with a clean header
+        if recreate and remove_file:
+            try:
+                header = [
+                    'timestamp', 'model', 'protected_attribute',
+                    'target_column', 'techniques', 'fitness',
+                    'fairness', 'performance', 'extra'
+                ]
+                with open(SIMPLE_CACHE_PATH, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.DictWriter(f, fieldnames=header)
+                    writer.writeheader()
+            except Exception as e:
+                print(f"[clear_simple_cache] Could not recreate cache file: {e}")
+                return False
+
+    return True
 
 # load simple cache at import time
 _load_simple_cache()
@@ -194,7 +237,7 @@ def fairness_metrics(test_data, test_indices, protected_attribute, predictions, 
     }
 
     
-def fitness(data, technique, model, protected_attribute, target_column, perf_weight=0.5, fair_weight=0.5):
+def fitness(data, technique, model, protected_attribute, target_column, perf_weight=0.5, fair_weight=0.5, reset_cache=False):
     """
     Evaluate the fitness of a model based on performance and fairness.
 
@@ -210,6 +253,8 @@ def fitness(data, technique, model, protected_attribute, target_column, perf_wei
     Returns:
         float: The fitness value computed as (alpha * PS - beta * FS).
     """
+    if reset_cache:
+        clear_simple_cache(remove_file=True, recreate=True)
     # SIMPLE CSV LOOKUP: if present, return stored values immediately
     key = _make_simple_key(model, protected_attribute, target_column, technique)
     with simple_cache_lock:
@@ -366,7 +411,6 @@ def fitness(data, technique, model, protected_attribute, target_column, perf_wei
         _append_simple_cache_row(model, protected_attribute, target_column, technique, fitness_value, fairness_score, performance_score)
     except Exception:
         pass
-
     return fitness_value, fairness_score, performance_score
 
 

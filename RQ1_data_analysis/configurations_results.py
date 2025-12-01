@@ -85,7 +85,7 @@ def main():
     # ---- 1) Full parameter configuration summary ----
     print("\n[1] Summarizing per full GA parameter configuration...")
     full_group_cols = ["population_size", "generations", "alpha", "beta"]
-    full_summary = summarize_group(df, full_group_cols, "rq1_full_paramgrid_summary.csv")
+    full_summary = summarize_group(df, full_group_cols, "rq1_fate_full_paramgrid_summary.csv")
 
     # Show a few best configs by mean fitness
     print("\nTop 10 parameter configs by mean fitness:")
@@ -99,16 +99,16 @@ def main():
     print("\n[2] Summarizing per single GA hyperparameter...")
 
     # By population size
-    pop_summary = summarize_group(df, ["population_size"], "rq1_by_population_size.csv")
+    pop_summary = summarize_group(df, ["population_size"], "rq1_fate_by_population_size.csv")
 
     # By number of generations
-    gen_summary = summarize_group(df, ["generations"], "rq1_by_generations.csv")
+    gen_summary = summarize_group(df, ["generations"], "rq1_fate_by_generations.csv")
 
     # By alpha (we treat as crossover rate)
-    alpha_summary = summarize_group(df, ["alpha"], "rq1_by_alpha.csv")  
+    alpha_summary = summarize_group(df, ["alpha"], "rq1_fate_by_alpha.csv")  
 
     # By beta (we treat as mutation rate)
-    beta_summary = summarize_group(df, ["beta"], "rq1_by_beta.csv")
+    beta_summary = summarize_group(df, ["beta"], "rq1_fate_by_beta.csv")
 
     # Show short previews
     print("\nPopulation size summary (sorted by fitness_mean):")

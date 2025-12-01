@@ -15,7 +15,7 @@ def sample_dataset(df, fraction=1.0, random_state=42):
     return df.sample(frac=fraction, random_state=random_state).reset_index(drop=True)
 
 
-def minimal_clean(df, target_column=None):
+def minimal_clean(df, target_column):
     """Minimal cleaning:
     - Drop rows with missing target (if provided)
     - Remove columns that are all NA
@@ -109,6 +109,7 @@ def prepare_data_model(df, target_column, protected_attribute=None, binarize=Tru
 
     Returns: processed_df (features + target + protected attribute)
     """
+
     df = df.copy()
     df = minimal_clean(df, target_column=target_column)
     if binarize:

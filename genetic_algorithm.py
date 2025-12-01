@@ -6,7 +6,7 @@ import random
 
 
 def genetic_algorithm(dataset, protected_attribute, target_column, model, generations=10,
-                      population_size=10, alpha=0.7, beta=0.1):
+                      population_size=10, alpha=0.5, beta=0.5):
     """
     Run a genetic algorithm to optimize preprocessing techniques for a given ML model.
 
@@ -52,14 +52,15 @@ def genetic_algorithm(dataset, protected_attribute, target_column, model, genera
                 seen.add(x)
                 out.append(x)
         return out
-
+    reset_cache = True
     # Iterate through each generation
     for generation in range(generations):
         print(f"Generation {generation + 1}/{generations} start")
         # Evaluate fitness of each individual (technique list) using the fixed model
         fitness_scores = []
         for technique_list in population:
-            fit_result = fitness(dataset.copy(), technique_list, model, protected_attribute, target_column)
+            fit_result = fitness(dataset.copy(), technique_list, model, protected_attribute, target_column, reset_cache=reset_cache)
+            reset_cache = False
             # fitness may return either a single float (legacy/error) or a tuple (fitness_value, fairness_score, performance_score)
             if isinstance(fit_result, tuple) and len(fit_result) >= 1:
                 fitness_value = fit_result[0]

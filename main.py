@@ -136,20 +136,20 @@ def execute_fate(sample_ready, ds_name, ds_path, protected_attribute, target, mo
 if __name__ == "__main__":
     # Simplified automated runner for the 3 datasets (adult, german, heart)
     datasets = [
-        #{
-        #    'name': 'adult',
-        #    'path': 'datasets/adult.csv',
-        #    'preparer_name': 'prepare_adult',
-        #    'protected_attributes': ['race', 'sex'],
-        #    'target': 'salary'
-        #},
-        #{
-        #    'name': 'german',
-        #    'path': 'datasets/german.csv',
-        #    'preparer_name': 'prepare_german',
-        #    'protected_attributes': ['sex', 'age'],
-        #    'target': 'Target'
-        #},
+        {
+            'name': 'adult',
+            'path': 'datasets/adult.csv',
+            'preparer_name': 'prepare_adult',
+            'protected_attributes': ['race', 'sex'],
+            'target': 'salary'
+        },
+        {
+            'name': 'german',
+            'path': 'datasets/german.csv',
+            'preparer_name': 'prepare_german',
+            'protected_attributes': ['sex', 'age'],
+            'target': 'Target'
+        },
         {
             'name': 'heart',
             'path': 'datasets/heart.csv',
@@ -227,7 +227,7 @@ if __name__ == "__main__":
         # call execute_fate but don't let worker write CSV; return the rows instead
         try:
             rows = execute_fate(sample_ready, ds_cfg['name'], ds_cfg['path'], prot, ds_cfg['target'], models,
-                                population_size=pop, generations=gen, alpha=alpha, beta=beta, summary_path=None)
+                                population_size=pop, generations=gen, alpha=alpha, beta=beta, summary_path=None, reset_cache=False)
             return rows
         except Exception as e:
             # return error rows for each model on failure

@@ -72,7 +72,7 @@ def main():
         print()
 
     # Save best per group
-    base = "rq1_results"
+    base = "rq1_fate_results"
     best_per_group_path = f"{base}_best_per_group.csv"
     best_per_group.to_csv(best_per_group_path, index=False)
     print(f"Saved best configurations per group to: {best_per_group_path}")
