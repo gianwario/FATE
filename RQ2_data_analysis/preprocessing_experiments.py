@@ -104,6 +104,22 @@ def compute_fairness_score_from_metrics(sp, eo, di):
     fairness_score = (sp + eo + di) / 3.0
     return fairness_score
     
+def binarize_protected_for_fairsmote(s, protected_attribute: str):
+    """
+    Convert the protected attribute to a binary privileged/unprivileged indicator
+    for use with FairSMOTE.
+    """
+    s_series = pd.Series(s)
+    name_lower = protected_attribute.lower()
+
+    # Numeric age-like attribute
+    if 'age' in name_lower and pd.api.types.is_numeric_dtype(s_series):
+        thr = s_series.mean()
+        return (s_series > thr).astype(int)
+
+    # Generic fallback: majority value is privileged
+    mode_val = s_series.mode().iloc[0]
+    return (s_series == mode_val).astype(int)
 
 
 def run_baseline_method(sample_ready, ds_cfg, protected_attr, model_id, method_name):
@@ -181,62 +197,55 @@ def run_baseline_method(sample_ready, ds_cfg, protected_attr, model_id, method_n
             Generic FairSMOTE-style oversampling implementation.
             """
 
-            # Build a dataframe that contains features + label + protected attribute
-            df_train = X_train.copy()
-            df_train[target] = y_train.values
+            # 1) Binarize protected attribute for FairSMOTE
+            s_bin = binarize_protected_for_fairsmote(s_train, protected_attribute=protected_attr)
 
-            # if the protected attribute is not already in X, attach it from s_train
-            if protected_attr in df_train.columns:
-                s_col = df_train[protected_attr]
-            else:
-                df_train[protected_attr] = s_train.values
-                s_col = df_train[protected_attr]
+            # 2) Build a working DataFrame with features + y + s_bin
+            df_train = pd.DataFrame(X_train.copy())
+            df_train['_y'] = pd.Series(y_train).values
+            df_train['_s'] = pd.Series(s_bin).values
 
-            y_col = target
-            s_col_name = protected_attr
+            # Keep original feature columns so we can restore them later
+            orig_feature_cols = list(X_train.columns)
 
-            # Sanity: make sure y and s are binary
-            y_vals = df_train[y_col].unique()
-            s_vals = df_train[s_col_name].unique()
-            if not set(y_vals).issubset({0, 1}) or not set(s_vals).issubset({0, 1}):
-                raise ValueError(
-                    f"FairSMOTE expects binary y and s. Got y={y_vals}, s={s_vals}"
-                )
+            # 3) Check binary assumption for safety
+            y_vals = set(df_train['_y'].unique())
+            s_vals = set(df_train['_s'].unique())
+            if not y_vals.issubset({0, 1}) or not s_vals.issubset({0, 1}):
+                raise ValueError(f"FairSMOTE expects binary y and s. Got y={y_vals}, s={s_vals}")
 
-            # ---- 1. Count the four (class, protected) combinations ----
-            g00 = df_train[(df_train[y_col] == 0) & (df_train[s_col_name] == 0)]
-            g01 = df_train[(df_train[y_col] == 0) & (df_train[s_col_name] == 1)]
-            g10 = df_train[(df_train[y_col] == 1) & (df_train[s_col_name] == 0)]
-            g11 = df_train[(df_train[y_col] == 1) & (df_train[s_col_name] == 1)]
+            # 4) Split into four (y,s) groups
+            g00 = df_train[(df_train['_y'] == 0) & (df_train['_s'] == 0)]
+            g01 = df_train[(df_train['_y'] == 0) & (df_train['_s'] == 1)]
+            g10 = df_train[(df_train['_y'] == 1) & (df_train['_s'] == 0)]
+            g11 = df_train[(df_train['_y'] == 1) & (df_train['_s'] == 1)]
 
             n00, n01, n10, n11 = len(g00), len(g01), len(g10), len(g11)
             max_n = max(n00, n01, n10, n11)
 
             def oversample_group(df_group, target_size):
-                """Random oversampling with replacement to reach target_size."""
-                cur = len(df_group)
-                if cur == 0 or cur >= target_size:
+                if len(df_group) == 0 or len(df_group) >= target_size:
                     return df_group
-                extra = df_group.sample(
-                    n=target_size - cur,
-                    replace=True,
-                    random_state=42  # or pass a seed from outside if you want
+                extra = target_size - len(df_group)
+                return pd.concat(
+                    [df_group, df_group.sample(n=extra, replace=True, random_state=42)],
+                    ignore_index=True
                 )
-                return pd.concat([df_group, extra], ignore_index=True)
 
-            # ---- 2. Oversample each group up to max_n ----
+            # 5) Oversample each group up to max_n
             g00_bal = oversample_group(g00, max_n)
             g01_bal = oversample_group(g01, max_n)
             g10_bal = oversample_group(g10, max_n)
             g11_bal = oversample_group(g11, max_n)
 
-            # ---- 3. Reassemble balanced training data ----
+            # 6) Reassemble balanced training data
             df_balanced = pd.concat([g00_bal, g01_bal, g10_bal, g11_bal], ignore_index=True)
 
-            # ---- 4. Split back into X / y / s ----
-            y_tr = df_balanced[y_col].copy()
-            s_tr = df_balanced[s_col_name].copy()
-            X_tr = df_balanced.drop(columns=[y_col])
+            # 7) Split back into X / y / s
+            y_tr = df_balanced['_y'].reset_index(drop=True)
+            s_tr = df_balanced['_s'].reset_index(drop=True)
+            X_tr = df_balanced[orig_feature_cols].reset_index(drop=True)
+
 
         else:
             # Should not happen; you can also add a "no mitigation" method if you want
@@ -324,6 +333,7 @@ def run_rq2():
             continue
 
         # --- 1) FATE: run GA via execute_fate with selected hyperparams ---
+        '''
         print("  -> Running FATE (GA)...")
         fate_rows = execute_fate(
             sample_ready=sample_ready,
@@ -350,12 +360,12 @@ def run_rq2():
                 "elapsed_seconds": fr["elapsed_seconds"],
                 "error": fr["error"],
             })
-
+        '''
         # --- 2) Baselines: FairSMOTE, Reweighing, DIR ---
         baselines = [
             ("FairSMOTE", "fairsmote"),
-            ("Reweighing", "reweighing"),
-            ("DIR", "dir"),
+            #("Reweighing", "reweighing"),
+            #("DIR", "dir"),
         ]
         for label, method_name in baselines:
             print(f"  -> Running baseline: {label}...")
@@ -380,9 +390,6 @@ def run_rq2():
                     "method": label,
                     "performance_score": np.nan,
                     "fairness_score": np.nan,
-                    "mean_statistical_parity": np.nan,
-                    "mean_equal_opportunity": np.nan,
-                    "mean_disparate_impact": np.nan,
                     "elapsed_seconds": 0.0,
                     "error": str(e),
                 })

@@ -21,7 +21,7 @@ import json
 import time
 
 # Simple CSV cache (matches on model / protected_attribute / target_column / techniques set)
-SIMPLE_CACHE_PATH = os.path.join(os.path.dirname(__file__), "experiments_cache.csv")
+SIMPLE_CACHE_PATH = os.path.join(os.path.dirname(__file__), "rq2_experiments_cache.csv")
 simple_cache_lock = threading.Lock()
 simple_cache = {}  # key -> (fitness, fairness, performance, row_dict)
 
