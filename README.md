@@ -85,7 +85,8 @@ All RQ1 results are located in `RQ1_data_analysis/`.
 
 ### RQ2 — Comparison Against State-of-the-Art Pre-processing Methods
 
-**Goal:**Statistically compare FATE-selected pipelines against standard bias mitigation techniques:
+**Goal:**
+Statistically compare FATE-selected pipelines against standard bias mitigation techniques:
 
 - FairSMOTE
 - Reweighing
