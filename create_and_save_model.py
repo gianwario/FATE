@@ -1,3 +1,15 @@
+"""
+Standalone utility for training and persisting an initial baseline classifier.
+
+This module trains a Logistic Regression model on a user-specified dataset
+using only the protected attribute (``Sex_Code_Text``) as a feature and saves
+the fitted model to disk via ``joblib``.
+
+Note: This script is a **standalone utility** for early-stage model exploration
+and is **not** part of the main FATE pipeline.  The GA in
+``genetic_algorithm.py`` instantiates classifiers internally within
+``fitness.py`` and does not load pre-saved model files.
+"""
 import pandas as pd
 import os
 from sklearn.model_selection import train_test_split
@@ -7,7 +19,27 @@ from sklearn.metrics import accuracy_score
 import joblib
 
 # Main function
+
+
 def create_and_save_model():
+    """
+    Interactively train and save a Logistic Regression baseline model.
+
+    Prompts the user for a dataset path and an output directory.  Trains a
+    Logistic Regression on the binary ``DecileScore`` target (threshold > 5)
+    using ``Sex_Code_Text`` as the sole feature, prints test accuracy, and
+    saves the fitted model to ``<output_dir>/initial_model.pkl``.
+
+    Notes
+    -----
+    The column names ``Sex_Code_Text`` and ``DecileScore`` are hard-coded,
+    so this function applies only to COMPAS-style recidivism datasets.
+
+    This is a standalone prototype for the COMPAS dataset and is not part
+    of the main FATE pipeline.  The paper's experiments use Adult, German
+    Credit, and Heart Disease; classifiers are instantiated inside
+    ``fitness._build_classifier`` and are not loaded from disk.
+    """
     # Path to the dataset
     file_path = input("Enter the path to the dataset (e.g., '/path/to/dataset.csv'): ").strip()
 
@@ -53,6 +85,7 @@ def create_and_save_model():
     initial_model_path = os.path.join(output_dir, 'initial_model.pkl')
     joblib.dump(model, initial_model_path)
     print(f"Initial model saved at: {initial_model_path}")
+
 
 # Execute the main function
 if __name__ == "__main__":

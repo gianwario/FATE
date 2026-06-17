@@ -1,4 +1,24 @@
-import sys
+"""
+RQ1 best-configuration extractor: top-performing FATE configurations per experimental group.
+
+Reads ``output/experiments_results.csv`` and extracts the best GA
+configuration (by fitness) for three levels of grouping:
+
+1. **(dataset × model × protected_attribute)** – best config per group.
+   Saved to ``rq1_fate_results_best_per_group.csv``.
+   This file is the primary input for RQ2 experiments
+   (``RQ2_data_analysis/preprocessing_experiments.py``).
+
+2. **model** (absolute best across all datasets) – saved to
+   ``rq1_fate_results_best_per_model.csv``.
+
+3. **(dataset × protected_attribute)** (best across all models) – saved to
+   ``rq1_fate_results_best_per_dataset_attr.csv``.
+
+Configuration:
+    ``N_BEST``                – number of top configurations to select per group.
+    ``GROUP_BY_PROTECTED_ATTR`` – include protected_attribute in the group key.
+"""
 import pandas as pd
 csv_path = "../output/experiments_results.csv"  # results CSV path
 
@@ -8,6 +28,14 @@ GROUP_BY_PROTECTED_ATTR = True  # set False if you want to ignore protected_attr
 
 
 def main():
+    """
+    Extract and save the best FATE configuration rows across several groupings.
+
+    Reads the experiment results CSV, validates required columns, sorts by
+    fitness descending, then uses ``groupby(...).head(N_BEST)`` to select the
+    top-N configuration(s) per group.  All results are printed to stdout and
+    saved to CSV files for downstream RQ1 / RQ2 analysis.
+    """
     # Load CSV
     df = pd.read_csv(csv_path)
 
@@ -135,7 +163,9 @@ def main():
 
     best_per_dataset_attr_path = f"{base}_best_per_dataset_attr.csv"
     best_per_dataset_attr.to_csv(best_per_dataset_attr_path, index=False)
-    print(f"Saved absolute best per (dataset, protected_attribute) to: {best_per_dataset_attr_path}")
+    print(
+        f"Saved absolute best per (dataset, protected_attribute) to: {best_per_dataset_attr_path}"
+    )
 
 
 if __name__ == "__main__":

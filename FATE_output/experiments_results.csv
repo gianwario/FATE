@@ -1,0 +1,3 @@
+dataset,model_identifier,protected_attribute,population_size,generations,alpha,beta,techniques,model_used,fitness,fairness_score,performance_score,elapsed_seconds
+datasets/adult.csv,lr,sex,5,5,0.5,0.5,"['stratified_sampling', 'ipw']",lr,0.4006280245661761,0.026438765141004118,0.8276948142733562,695.3418109416962
+datasets/adult.csv,lr,sex,5,5,0.5,0.5,"[np.str_('stratified_sampling'), 'standard', 'matching']",lr,0.4097957067961619,0.15488594130503922,0.974477354897363,728.7967610359192

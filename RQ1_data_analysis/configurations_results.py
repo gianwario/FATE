@@ -1,4 +1,27 @@
-import sys
+"""
+RQ1 parameter-sensitivity analysis: aggregate fitness statistics per GA hyperparameter
+configuration.
+
+Reads the full parameter-grid experiment results from
+``output/experiments_results.csv`` and produces summary CSVs aggregating
+fitness, fairness, performance, and elapsed-time statistics grouped by:
+
+1. Full (population_size × generations × alpha × beta) configuration.
+2. Population size alone.
+3. Number of generations alone.
+4. Alpha (crossover rate) alone.
+5. Beta (mutation rate) alone.
+
+Used to answer the parameter-sensitivity sub-question of RQ1: how do
+individual GA hyperparameters affect FATE's optimisation outcome?
+
+Output files (written to the working directory):
+    ``rq1_fate_full_paramgrid_summary.csv``
+    ``rq1_fate_by_population_size.csv``
+    ``rq1_fate_by_generations.csv``
+    ``rq1_fate_by_alpha.csv``
+    ``rq1_fate_by_beta.csv``
+"""
 import numpy as np
 import pandas as pd
 csv_path = "../output/experiments_results.csv"  # results CSV path
@@ -6,27 +29,43 @@ csv_path = "../output/experiments_results.csv"  # results CSV path
 
 def summarize_group(df, group_cols, prefix):
     """
-    Helper to aggregate metrics over a given grouping.
-    Returns the aggregated DataFrame.
+    Aggregate GA result metrics over a set of grouping columns and save to CSV.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Cleaned experiment results containing columns ``fitness``,
+        ``fairness_score``, ``performance_score``, ``elapsed_seconds``, and
+        all columns listed in *group_cols*.
+    group_cols : list of str
+        Column names to group by (e.g., ``['population_size']``).
+    prefix : str
+        Base name for the output CSV file; written to ``<prefix>.csv``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Aggregated DataFrame with mean, median, and std for each metric,
+        plus ``n_runs`` (count of rows in each group).
     """
     agg = (
         df.groupby(group_cols)
-          .agg(
-              n_runs=("fitness", "count"),
-              fitness_mean=("fitness", "mean"),
-              fitness_median=("fitness", "median"),
-              fitness_std=("fitness", "std"),
-              fairness_mean=("fairness_score", "mean"),
-              fairness_median=("fairness_score", "median"),
-              fairness_std=("fairness_score", "std"),
-              perf_mean=("performance_score", "mean"),
-              perf_median=("performance_score", "median"),
-              perf_std=("performance_score", "std"),
-              time_mean=("elapsed_seconds", "mean"),
-              time_median=("elapsed_seconds", "median"),
-              time_std=("elapsed_seconds", "std"),
-          )
-          .reset_index()
+        .agg(
+            n_runs=("fitness", "count"),
+            fitness_mean=("fitness", "mean"),
+            fitness_median=("fitness", "median"),
+            fitness_std=("fitness", "std"),
+            fairness_mean=("fairness_score", "mean"),
+            fairness_median=("fairness_score", "median"),
+            fairness_std=("fairness_score", "std"),
+            perf_mean=("performance_score", "mean"),
+            perf_median=("performance_score", "median"),
+            perf_std=("performance_score", "std"),
+            time_mean=("elapsed_seconds", "mean"),
+            time_median=("elapsed_seconds", "median"),
+            time_std=("elapsed_seconds", "std"),
+        )
+        .reset_index()
     )
     output_path = f"{prefix}.csv"
     agg.to_csv(output_path, index=False)
@@ -35,6 +74,18 @@ def summarize_group(df, group_cols, prefix):
 
 
 def main():
+    """
+    Load, clean, and summarise the full parameter-grid results for RQ1 sensitivity analysis.
+
+    Steps:
+
+    1. Load ``output/experiments_results.csv``.
+    2. Coerce metric columns to numeric; replace inf / -inf with NaN; drop rows
+       with any invalid metric value.
+    3. Call ``summarize_group`` for the full parameter grid and for each single
+       hyperparameter (population_size, generations, alpha, beta).
+    4. Print the top-10 parameter configurations by mean fitness to stdout.
+    """
     df = pd.read_csv(csv_path)
 
     # Basic sanity check
@@ -61,7 +112,7 @@ def main():
     # ---- Clean invalid rows (NaN / inf / -inf in key metrics) ----
     metric_cols = ["fitness", "fairness_score", "performance_score", "elapsed_seconds"]
 
-     # 1) Force numeric conversion; invalid parsing -> NaN
+    # 1) Force numeric conversion; invalid parsing -> NaN
     for col in metric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
@@ -105,7 +156,7 @@ def main():
     gen_summary = summarize_group(df, ["generations"], "rq1_fate_by_generations.csv")
 
     # By alpha (we treat as crossover rate)
-    alpha_summary = summarize_group(df, ["alpha"], "rq1_fate_by_alpha.csv")  
+    alpha_summary = summarize_group(df, ["alpha"], "rq1_fate_by_alpha.csv")
 
     # By beta (we treat as mutation rate)
     beta_summary = summarize_group(df, ["beta"], "rq1_fate_by_beta.csv")

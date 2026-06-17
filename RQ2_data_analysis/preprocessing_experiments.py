@@ -1,31 +1,56 @@
+"""
+RQ2 experiment runner: FATE vs state-of-the-art fairness pre-processing baselines.
+
+This module re-evaluates the best FATE configurations identified in RQ1
+(``RQ1_data_analysis/rq1_fate_results_best_per_group.csv``) against three
+state-of-the-art pre-processing bias mitigation methods under identical 5-fold
+stratified cross-validation:
+
+Baselines:
+    - **FairSMOTE** (in-house implementation): oversamples each of the four
+      (y ∈ {0,1}) × (s ∈ {0,1}) quadrants to equal size before training.
+    - **Reweighing** (AIF360): adjusts instance weights to equalise positive
+      prediction rates between privileged and unprivileged groups.
+    - **DIR** – Disparate Impact Remover (AIF360): transforms feature values
+      towards the marginal distribution to repair disparate impact.
+
+Evaluation metrics (identical to FATE's fitness function for comparability):
+    - **Performance**: PR-AUC (``average_precision_score``).
+    - **Fairness**: FS = (|SPD| + |EOD| + |DI|) / 3.
+    - **Execution time**: total wall-clock seconds summed across 5 folds.
+
+Output: ``RQ2_data_analysis/rq2_all_experiments_results.csv`` — long-format
+table with one row per (dataset, protected_attribute, model, method) group.
+
+Note: The FATE re-evaluation block inside ``run_rq2`` is currently commented
+out; the FATE rows are expected to be pre-populated from RQ1 results.
+"""
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))  # noqa: E402
 
-import time
-import ast
-import numpy as np
-import pandas as pd
+import time  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
 
-from sklearn.model_selection import StratifiedKFold
-from sklearn.metrics import average_precision_score
+from sklearn.model_selection import StratifiedKFold  # noqa: E402
+from sklearn.metrics import average_precision_score  # noqa: E402
 
 # === Your existing imports ===
-import preprocessing as preproc
-from preprocessing import prepare_data_model
-from main import execute_fate  # file where execute_fate is defined
-from fitness import fairness_metrics  # <-- point this to where you defined it
+import preprocessing as preproc  # noqa: E402
+from preprocessing import prepare_data_model  # noqa: E402
+from fitness import fairness_metrics  # noqa: E402
 
 # AIF360 for Reweighing / DIR / FairSMOTE
-from aif360.datasets import BinaryLabelDataset
-from aif360.algorithms.preprocessing import Reweighing, DisparateImpactRemover
+from aif360.datasets import BinaryLabelDataset  # noqa: E402
+from aif360.algorithms.preprocessing import Reweighing, DisparateImpactRemover  # noqa: E402
 # from aif360.algorithms.preprocessing import FairSMOTE  # if you use their implementation
 
 # === Model factory (reuse or adapt) ===
-from sklearn.linear_model import LogisticRegression
-from sklearn.svm import LinearSVC
-from sklearn.ensemble import RandomForestClassifier
-from xgboost import XGBClassifier
+from sklearn.linear_model import LogisticRegression  # noqa: E402
+from sklearn.svm import LinearSVC  # noqa: E402
+from sklearn.ensemble import RandomForestClassifier  # noqa: E402
+from xgboost import XGBClassifier  # noqa: E402
 
 
 BEST_CFG_CSV = "RQ1_data_analysis/rq1_fate_results_best_per_group.csv"
@@ -38,14 +63,14 @@ DATASETS = [
         "path": "datasets/adult.csv",
         "preparer_name": "prepare_adult",
         "protected_attributes": ["race", "sex"],
-        "target": "salary",   
+        "target": "salary",
     },
     {
         "name": "german",
         "path": "datasets/german.csv",
         "preparer_name": "prepare_german",
         "protected_attributes": ["sex", "age"],
-        "target": "Target",   
+        "target": "Target",
     },
     {
         "name": "heart",
@@ -60,22 +85,65 @@ DATASETS_BY_PATH = {ds["path"]: ds for ds in DATASETS}
 
 
 def build_model(model_id: str):
+    """
+    Instantiate a classifier by string identifier with the same hyperparameters as ``fitness.py``.
+
+    Using identical hyperparameters ensures that any performance difference
+    between FATE and a baseline is attributable to the pre-processing method,
+    not to the classifier configuration.
+
+    Parameters
+    ----------
+    model_id : str
+        One of: ``'lr'``, ``'rf'``, ``'svc'``, ``'xgb'``.
+
+    Returns
+    -------
+    sklearn estimator
+        Unfitted classifier instance.
+    """
     if model_id == 'lr':
-        classifier = LogisticRegression(max_iter=1000, solver='saga', penalty='l2', random_state=42, n_jobs=1)
+        classifier = LogisticRegression(
+            max_iter=1000, solver='saga', penalty='l2', random_state=42, n_jobs=1)
     elif model_id == 'rf':
-        classifier = RandomForestClassifier(n_estimators=100, max_depth=12, n_jobs=1, random_state=42)
+        classifier = RandomForestClassifier(
+            n_estimators=100, max_depth=12, n_jobs=1, random_state=42)
     elif model_id == 'svc':
         classifier = LinearSVC(dual=False, max_iter=10000, tol=1e-4, random_state=42)
     elif model_id == 'xgb':
-            classifier = XGBClassifier(use_label_encoder=False, eval_metric='logloss',
-                                       n_estimators=100, tree_method='hist',
-                                       verbosity=0, random_state=42, n_jobs=1)
+        classifier = XGBClassifier(use_label_encoder=False, eval_metric='logloss',
+                                   n_estimators=100, tree_method='hist',
+                                   verbosity=0, random_state=42, n_jobs=1)
 
     return classifier
 
 
 def prepare_sample_ready(ds_cfg, protected_attr: str):
-    """Reuse the same dataset preparation logic as in your GA runner."""
+    """
+    Load and prepare a dataset using the same pipeline as the GA runner.
+
+    Ensures the data fed to baselines is identical to the data the GA was
+    evaluated on, preserving comparability between FATE and the baselines.
+
+    Parameters
+    ----------
+    ds_cfg : dict
+        Dataset configuration dict with keys: ``path``, ``preparer_name``,
+        ``target``, ``name``.
+    protected_attr : str
+        Protected attribute column to preserve through ``prepare_data_model``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Model-ready dataset (features + target + protected attribute column).
+
+    Raises
+    ------
+    RuntimeError
+        If *protected_attr* is not present in the dataset after the
+        dataset-specific preparer is applied.
+    """
     raw = pd.read_csv(ds_cfg["path"])
 
     preparer = getattr(preproc, ds_cfg["preparer_name"])
@@ -98,16 +166,53 @@ def prepare_sample_ready(ds_cfg, protected_attr: str):
 
 def compute_fairness_score_from_metrics(sp, eo, di):
     """
-    Compute a single fairness score from the given metrics = (|SP|, |EO|, |DI|)/3
-    The closer to 1.0, the fairer the model.
+    Aggregate three fairness metric values into a single Fairness Score (FS).
+
+    FS = (|SPD| + |EOD| + |DI|) / 3.
+
+    This mirrors the normalised fairness term used in ``fitness.fitness`` so
+    that baseline comparisons in RQ2 use an identical FS definition.
+
+    Parameters
+    ----------
+    sp : float
+        Absolute statistical parity difference.
+    eo : float
+        Absolute equal opportunity difference.
+    di : float
+        Disparate impact deviation (``1 − DI_ratio``).
+
+    Returns
+    -------
+    float
+        Fairness score in [0, 1] (assuming each component is in [0, 1]).
+        Lower is fairer.
     """
     fairness_score = (sp + eo + di) / 3.0
     return fairness_score
-    
+
+
 def binarize_protected_for_fairsmote(s, protected_attribute: str):
     """
-    Convert the protected attribute to a binary privileged/unprivileged indicator
-    for use with FairSMOTE.
+    Convert the protected attribute to a binary 0/1 indicator for FairSMOTE.
+
+    FairSMOTE requires binary protected group labels to partition training
+    data into the four (y ∈ {0,1}) × (s ∈ {0,1}) quadrants.
+
+    Parameters
+    ----------
+    s : array-like
+        Protected attribute values for the training fold.
+    protected_attribute : str
+        Column name used to select the binarisation rule:
+
+        - ``'age'`` (numeric): threshold at the fold mean; above → 1.
+        - Other: majority (mode) value → 1, all others → 0.
+
+    Returns
+    -------
+    pd.Series
+        Binary integer series (0 or 1) aligned with *s*.
     """
     s_series = pd.Series(s)
     name_lower = protected_attribute.lower()
@@ -124,16 +229,49 @@ def binarize_protected_for_fairsmote(s, protected_attribute: str):
 
 def run_baseline_method(sample_ready, ds_cfg, protected_attr, model_id, method_name):
     """
-    Run one baseline method (FairSMOTE/Reweighing/DIR) with 5-fold CV.
+    Evaluate one bias mitigation baseline under 5-fold stratified cross-validation.
 
-    Returns:
-        dict with aggregated metrics:
-            performance_score (mean PR-AUC),
-            fairness_score (FS),
-            mean_statistical_parity,
-            mean_equal_opportunity,
-            mean_disparate_impact,
-            elapsed_seconds
+    Applies the specified fairness-aware pre-processing method to the training
+    fold at each CV iteration, trains a fresh classifier, evaluates on the test
+    fold, and aggregates metrics across folds.
+
+    Parameters
+    ----------
+    sample_ready : pd.DataFrame
+        Pre-processed dataset (identical to the data fed to FATE's fitness
+        function).
+    ds_cfg : dict
+        Dataset configuration dict (used to retrieve the target column name).
+    protected_attr : str
+        Protected attribute column name.
+    model_id : str
+        Classifier identifier (``'lr'``, ``'rf'``, ``'svc'``, ``'xgb'``).
+    method_name : str
+        Baseline method, case-insensitive: ``'fairsmote'``, ``'reweighing'``,
+        or ``'dir'``.
+
+    Returns
+    -------
+    dict
+        ``{'performance_score': float, 'fairness_score': float,
+        'elapsed_seconds': float}``
+
+        - ``performance_score``: mean PR-AUC across 5 folds.
+        - ``fairness_score``: FS = ``(|SPD| + |EOD| + |DI|) / 3``
+          averaged across folds.
+        - ``elapsed_seconds``: total wall-clock time summed over folds.
+
+    Notes
+    -----
+    **Reweighing**: uses AIF360 ``Reweighing``; instance weights are passed
+    as ``sample_weight`` to the classifier fit call.
+
+    **DIR**: uses AIF360 ``DisparateImpactRemover`` with ``repair_level=1.0``;
+    only features are modified — labels and group membership are unchanged.
+
+    **FairSMOTE**: in-house implementation that oversamples each
+    (y, s) quadrant to the size of the largest quadrant using sampling with
+    replacement.
     """
     target = ds_cfg["target"]
     df = sample_ready.copy()
@@ -153,7 +291,7 @@ def run_baseline_method(sample_ready, ds_cfg, protected_attr, model_id, method_n
     for fold_idx, (train_idx, test_idx) in enumerate(skf.split(X, y), 1):
         X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
         y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
-        s_train, s_test = s.iloc[train_idx], s.iloc[test_idx]
+        s_train = s.iloc[train_idx]
 
         start = time.time()
 
@@ -178,7 +316,6 @@ def run_baseline_method(sample_ready, ds_cfg, protected_attr, model_id, method_n
             df_rw = bld_rw.convert_to_dataframe()[0]
             X_tr = df_rw[X.columns]
             y_tr = df_rw[target]
-            s_tr = df_rw[protected_attr]
             sample_weight = bld_rw.instance_weights
 
         elif method_name.lower() in ["dir", "disparate_impact_remover"]:
@@ -190,7 +327,6 @@ def run_baseline_method(sample_ready, ds_cfg, protected_attr, model_id, method_n
             df_dir = bld_dir.convert_to_dataframe()[0]
             X_tr = df_dir[X.columns]
             y_tr = y_train
-            s_tr = s_train
 
         elif method_name.lower() in ["fairsmote", "fairsMote", "fairsmoTe"]:
             """
@@ -243,15 +379,12 @@ def run_baseline_method(sample_ready, ds_cfg, protected_attr, model_id, method_n
 
             # 7) Split back into X / y / s
             y_tr = df_balanced['_y'].reset_index(drop=True)
-            s_tr = df_balanced['_s'].reset_index(drop=True)
             X_tr = df_balanced[orig_feature_cols].reset_index(drop=True)
-
 
         else:
             # Should not happen; you can also add a "no mitigation" method if you want
             X_tr = X_train.copy()
             y_tr = y_train.copy()
-            s_tr = s_train.copy()
 
         model = build_model(model_id)
         if sample_weight is not None:
@@ -304,18 +437,37 @@ def run_baseline_method(sample_ready, ds_cfg, protected_attr, model_id, method_n
 
 
 def run_rq2():
+    """
+    Execute the full RQ2 experiment: evaluate baselines for the best FATE configurations.
+
+    For each row in the best-per-group FATE results from RQ1, loads the
+    corresponding dataset, prepares it identically to the FATE run, then
+    evaluates the configured baselines (FairSMOTE by default; Reweighing and
+    DIR are commented out for deferred evaluation).
+
+    Results are collected into a long-format DataFrame and written to
+    ``RQ2_data_analysis/rq2_all_experiments_results.csv``.
+
+    Notes
+    -----
+    The FATE re-evaluation block (``execute_fate`` call) is intentionally
+    commented out.  The output CSV is expected to already contain FATE rows
+    from the RQ1 runs (via ``main.py``), so this function only appends the
+    three baseline method rows.  Run ``main.py`` first to populate the FATE
+    rows before calling this function.
+    """
     best_cfg = pd.read_csv(BEST_CFG_CSV)
 
     results = []
 
     for _, row in best_cfg.iterrows():
-        ds_path   = row["dataset"]
-        model_id  = row["model_identifier"]
+        ds_path = row["dataset"]
+        model_id = row["model_identifier"]
         prot_attr = row["protected_attribute"]
-        pop       = int(row["population_size"])
-        gens      = int(row["generations"])
-        alpha     = float(row["alpha"])
-        beta      = float(row["beta"])
+        pop = int(row["population_size"])  # noqa: F841
+        gens = int(row["generations"])  # noqa: F841
+        alpha = float(row["alpha"])  # noqa: F841
+        beta = float(row["beta"])  # noqa: F841
 
         if ds_path not in DATASETS_BY_PATH:
             print(f"[WARN] Dataset path {ds_path} not in DATASETS config, skipping.")
@@ -346,7 +498,7 @@ def run_rq2():
             generations=gens,
             alpha=alpha,
             beta=beta,
-            summary_path=None       
+            summary_path=None
         )
         # execute_fate returns a list of rows (one per model)
         for fr in fate_rows:
@@ -364,13 +516,14 @@ def run_rq2():
         # --- 2) Baselines: FairSMOTE, Reweighing, DIR ---
         baselines = [
             ("FairSMOTE", "fairsmote"),
-            #("Reweighing", "reweighing"),
-            #("DIR", "dir"),
+            # ("Reweighing", "reweighing"),
+            # ("DIR", "dir"),
         ]
         for label, method_name in baselines:
             print(f"  -> Running baseline: {label}...")
             try:
-                metrics = run_baseline_method(sample_ready, ds_cfg, prot_attr, model_id, method_name)
+                metrics = run_baseline_method(
+                    sample_ready, ds_cfg, prot_attr, model_id, method_name)
                 results.append({
                     "dataset_name": ds_cfg["name"],
                     "protected_attribute": prot_attr,
