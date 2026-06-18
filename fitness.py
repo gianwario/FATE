@@ -68,9 +68,14 @@ logger = logging.getLogger(__name__)
 _FATE_OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'FATE_output')
 os.makedirs(_FATE_OUTPUT_DIR, exist_ok=True)
 
-SIMPLE_CACHE_PATH = os.path.join(_FATE_OUTPUT_DIR, 'fitness_cache.csv')
-simple_cache_lock = threading.Lock()
-simple_cache = {}  # key -> (fitness, fairness, performance, row_dict)
+# Runtime cache — written during the current run (always used for reads and writes).
+RUNTIME_CACHE_PATH = os.path.join(_FATE_OUTPUT_DIR, 'runtime_cache.csv')
+# Root cache — pre-computed results from the paper's experiment grid (read-only).
+ROOT_CACHE_PATH = os.path.join(os.path.dirname(__file__), 'experiments_cache.csv')
+
+_runtime_cache_lock = threading.Lock()
+_runtime_cache = {}  # key -> (fitness, fairness, performance, row_dict)
+_root_cache = {}    # key -> (fitness, fairness, performance, row_dict) — never written
 
 # ---------------------------------------------------------------------------
 # Cache helpers
@@ -136,38 +141,50 @@ def _parse_cache_row_metrics(r):
     return fitness_val, fairness_val, perf_val
 
 
-def _load_simple_cache():
+def _load_cache(path):
     """
-    Load previously computed fitness results from the on-disk CSV cache.
+    Load a fitness cache CSV into a dict and return it.
 
-    Called once at module import time.  Populates the module-level
-    ``simple_cache`` dict so that repeated GA runs across scripts can skip
-    already-evaluated individuals.  Corrupt or missing cache files are silently
-    ignored and the GA continues without cached results.
+    Used at module import time to populate both ``_runtime_cache`` and
+    ``_root_cache``.  Corrupt or missing files are silently ignored and an
+    empty dict is returned so the GA continues without cached results.
+
+    Parameters
+    ----------
+    path : str
+        Absolute path to a cache CSV file.
+
+    Returns
+    -------
+    dict
+        ``{(model, protected_attribute, target_column, frozenset(techniques)):
+           (fitness, fairness, performance, row_dict)}``
     """
-    if not os.path.exists(SIMPLE_CACHE_PATH):
-        return
+    cache = {}
+    if not os.path.exists(path):
+        return cache
     try:
-        with open(SIMPLE_CACHE_PATH, newline='', encoding='utf-8') as f:
+        with open(path, newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for r in reader:
                 key = (r.get('model', ''), r.get('protected_attribute', ''),
                        r.get('target_column', ''),
-                       frozenset(json.loads(r.get('techniques', ''))))
+                       frozenset(json.loads(r.get('techniques', '[]'))))
                 fitness_val, fairness_val, perf_val = _parse_cache_row_metrics(r)
-                simple_cache[key] = (fitness_val, fairness_val, perf_val, r)
+                cache[key] = (fitness_val, fairness_val, perf_val, r)
     except Exception:
-        # ignore corrupt cache file
-        return
+        pass
+    return cache
 
 
-def _append_simple_cache_row(model, protected_attribute, target_column, technique,
-                             fitness, fairness, performance):
+def _append_runtime_cache_row(model, protected_attribute, target_column, technique,
+                              fitness, fairness, performance):
     """
-    Persist a new fitness result to the CSV cache and update the in-memory dict.
+    Persist a new fitness result to the runtime cache CSV and update the in-memory dict.
 
-    Thread-safe: guarded by ``simple_cache_lock`` to allow concurrent GA
-    evaluations from ``main.py``'s ``ThreadPoolExecutor``.
+    Thread-safe: guarded by ``_runtime_cache_lock`` to allow concurrent GA
+    evaluations from ``main.py``'s ``ThreadPoolExecutor``.  Never writes to
+    ``experiments_cache.csv`` (the root read-only cache).
 
     Parameters
     ----------
@@ -175,7 +192,6 @@ def _append_simple_cache_row(model, protected_attribute, target_column, techniqu
     protected_attribute : str
     target_column : str
     technique : frozenset or list
-        Technique set as originally passed to ``_make_simple_key``.
     fitness : float or None
     fairness : float or None
     performance : float or None
@@ -193,128 +209,21 @@ def _append_simple_cache_row(model, protected_attribute, target_column, techniqu
         'performance': '' if performance is None else str(performance),
         'extra': ''
     }
-    with simple_cache_lock:
-        first = not os.path.exists(SIMPLE_CACHE_PATH)
-        with open(SIMPLE_CACHE_PATH, 'a', newline='', encoding='utf-8') as f:
+    with _runtime_cache_lock:
+        first = not os.path.exists(RUNTIME_CACHE_PATH)
+        with open(RUNTIME_CACHE_PATH, 'a', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=header)
             if first:
                 writer.writeheader()
             writer.writerow(row)
         key = _make_simple_key(model, protected_attribute, target_column, technique)
-        simple_cache[key] = (fitness, fairness, performance, row)
+        _runtime_cache[key] = (fitness, fairness, performance, row)
 
 
-def _delete_cache_file():
-    """
-    Delete the on-disk cache CSV file.
-
-    Returns
-    -------
-    bool
-        True on success; False if the file could not be removed.
-    """
-    try:
-        os.remove(SIMPLE_CACHE_PATH)
-        return True
-    except Exception as e:
-        logger.error("Could not remove cache file: %s", e)
-        return False
-
-
-def _recreate_empty_cache_file():
-    """
-    Write a fresh, empty cache CSV with the correct header columns.
-
-    Returns
-    -------
-    bool
-        True on success; False if the file could not be created.
-    """
-    header = ['timestamp', 'model', 'protected_attribute',
-              'target_column', 'techniques', 'fitness',
-              'fairness', 'performance', 'extra']
-    try:
-        with open(SIMPLE_CACHE_PATH, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=header)
-            writer.writeheader()
-        return True
-    except Exception as e:
-        logger.error("Could not recreate cache file: %s", e)
-        return False
-
-
-def _conditionally_remove_cache_file(remove_file):
-    """
-    Remove the cache file from disk if *remove_file* is True and the file exists.
-
-    Parameters
-    ----------
-    remove_file : bool
-
-    Returns
-    -------
-    bool
-        True if nothing needed to be done or the deletion succeeded; False on error.
-    """
-    if not remove_file:
-        return True
-    if not os.path.exists(SIMPLE_CACHE_PATH):
-        return True
-    return _delete_cache_file()
-
-
-def _conditionally_recreate_cache_file(recreate, remove_file):
-    """
-    Recreate an empty cache file if both *recreate* and *remove_file* are True.
-
-    Parameters
-    ----------
-    recreate : bool
-    remove_file : bool
-
-    Returns
-    -------
-    bool
-        True if nothing needed to be done or recreation succeeded; False on error.
-    """
-    if not recreate or not remove_file:
-        return True
-    return _recreate_empty_cache_file()
-
-
-def clear_simple_cache(remove_file=True, recreate=False):
-    """
-    Clear the in-memory and on-disk fitness cache.
-
-    Used at the start of each new parameter-grid run (``reset_cache=True``
-    in ``fitness()``) to avoid stale cached values contaminating fresh
-    experimental conditions.
-
-    Parameters
-    ----------
-    remove_file : bool, optional
-        If True (default), delete the CSV file from disk.
-    recreate : bool, optional
-        If True and *remove_file* is True, write a fresh empty CSV with the
-        correct header after deletion.
-
-    Returns
-    -------
-    bool
-        True if the operation succeeded; False if a filesystem error occurred.
-    """
-    with simple_cache_lock:
-        simple_cache.clear()
-        if not _conditionally_remove_cache_file(remove_file):
-            return False
-        if not _conditionally_recreate_cache_file(recreate, remove_file):
-            return False
-
-    return True
-
-
-# load simple cache at import time
-_load_simple_cache()
+# Load both caches at import time.
+# _root_cache is read-only; _runtime_cache accumulates results across runs.
+_runtime_cache.update(_load_cache(RUNTIME_CACHE_PATH))
+_root_cache.update(_load_cache(ROOT_CACHE_PATH))
 
 
 # ---------------------------------------------------------------------------
@@ -963,10 +872,14 @@ def fitness(data, technique, model, protected_attribute, target_column,
     fair_weight : float, optional
         Weight on the fairness term (default 0.5).
     reset_cache : bool, optional
-        If True, clear and recreate the on-disk cache before evaluating.
-        Set to True by ``genetic_algorithm`` on the very first fitness call
-        of each GA run to prevent stale entries from a prior parameter-grid
-        point (default False).
+        Controls which caches are consulted for lookups (default False).
+
+        - ``False``: check ``_runtime_cache`` first, then fall back to the
+          read-only ``experiments_cache.csv`` root cache.  New evaluations are
+          written to ``FATE_output/runtime_cache.csv`` only.
+        - ``True``: skip the root cache entirely; use only the runtime cache.
+          Useful when you want a fresh evaluation uncontaminated by the paper's
+          pre-computed results.
 
     Returns
     -------
@@ -985,14 +898,19 @@ def fitness(data, technique, model, protected_attribute, target_column,
     frozenset(technique)) returns the stored triple immediately without
     re-evaluating the classifier.
     """
-    if reset_cache:
-        clear_simple_cache(remove_file=True, recreate=True)
-
     key = _make_simple_key(model, protected_attribute, target_column, technique)
-    with simple_cache_lock:
-        cached = simple_cache.get(key)
+
+    # Runtime cache check (always — accumulates results from the current run).
+    with _runtime_cache_lock:
+        cached = _runtime_cache.get(key)
     if cached and cached[0] is not None:
         return cached[0], cached[1], cached[2]
+
+    # Root cache check (only when reset_cache=False — read-only, never written).
+    if not reset_cache:
+        cached = _root_cache.get(key)
+        if cached and cached[0] is not None:
+            return cached[0], cached[1], cached[2]
 
     data = _apply_technique_pipeline(data, technique, protected_attribute)
     data = prepare_data_model(data, target_column, protected_attribute)
@@ -1021,8 +939,8 @@ def fitness(data, technique, model, protected_attribute, target_column,
         perf_scores, fair_scores, perf_weight, fair_weight)
 
     try:
-        _append_simple_cache_row(model, protected_attribute, target_column, technique,
-                                 fitness_value, fairness_score, performance_score)
+        _append_runtime_cache_row(model, protected_attribute, target_column, technique,
+                                  fitness_value, fairness_score, performance_score)
     except Exception:
         pass
 

@@ -55,6 +55,15 @@ FULL_POP_SIZES=(5 10 15 20 50 100)
 FULL_GEN_COUNTS=(5 10 15 20 50 100)
 FULL_RATES=(0 0.25 0.50 0.75 1)
 
+# Cache mode.
+#   false (default) — fitness lookups also check experiments_cache.csv (root,
+#                     read-only), which contains all pre-computed paper results.
+#                     Reuses cached evaluations, so runs are much faster.
+#   true            — ignore experiments_cache.csv entirely; only
+#                     FATE_output/runtime_cache.csv is consulted and written.
+#                     Use this when you want a fully independent evaluation.
+RESET_CACHE=false
+
 # =============================================================================
 # internals — do not edit below this line unless you know what you are doing
 # =============================================================================
@@ -106,11 +115,12 @@ USAGE
 # =============================================================================
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --mode)    MODE="$2";             shift 2 ;;
-        --pop)     POP_OVERRIDE="$2";     shift 2 ;;
-        --gen)     GEN_OVERRIDE="$2";     shift 2 ;;
-        --dataset) DATASET_OVERRIDE="$2"; shift 2 ;;
-        --model)   MODEL_OVERRIDE="$2";   shift 2 ;;
+        --mode)         MODE="$2";             shift 2 ;;
+        --pop)          POP_OVERRIDE="$2";     shift 2 ;;
+        --gen)          GEN_OVERRIDE="$2";     shift 2 ;;
+        --dataset)      DATASET_OVERRIDE="$2"; shift 2 ;;
+        --model)        MODEL_OVERRIDE="$2";   shift 2 ;;
+        --reset-cache)  RESET_CACHE=true;      shift   ;;
         -h|--help) usage ;;
         *)
             echo "ERROR: Unknown argument: $1" >&2
@@ -251,12 +261,13 @@ _DS_CFGS = {
                'target': 'num',    'prot': 'sex'},
 }
 
-ds_name = '${DATASET}'
-model   = '${MODEL}'
-pop     = ${POP}
-gen     = ${GEN}
-summary = '${SUMMARY_CSV}'
-err_log = '${ERRORS_LOG}'
+ds_name     = '${DATASET}'
+model       = '${MODEL}'
+pop         = ${POP}
+gen         = ${GEN}
+summary     = '${SUMMARY_CSV}'
+err_log     = '${ERRORS_LOG}'
+reset_cache = '${RESET_CACHE}' == 'true'
 
 cfg     = _DS_CFGS[ds_name]
 ds_info = {'name': ds_name, 'path': cfg['path']}
@@ -286,7 +297,7 @@ try:
     rows = execute_fate(
         sample, ds_name, cfg['path'], cfg['prot'], cfg['target'],
         [model], population_size=pop, generations=gen,
-        alpha=0.5, beta=0.5, summary_path=None,
+        alpha=0.5, beta=0.5, summary_path=None, reset_cache=reset_cache,
     )
 except Exception as exc:
     _write_error_log(
@@ -406,6 +417,7 @@ dataset_filter = '${DATASET_OVERRIDE}'
 model_filter   = '${MODEL_OVERRIDE}'
 pop_override   = '${POP_OVERRIDE}'
 gen_override   = '${GEN_OVERRIDE}'
+reset_cache    = '${RESET_CACHE}' == 'true'
 
 datasets   = [d for d in _ALL_DATASETS
               if not dataset_filter or d['name'] == dataset_filter]
@@ -454,7 +466,7 @@ def _worker(ds_cfg, prot, pop, gen, alpha, beta):
     return execute_fate(
         sample, ds_cfg['name'], ds_cfg['path'], prot, ds_cfg['target'],
         models, population_size=pop, generations=gen,
-        alpha=alpha, beta=beta, summary_path=None,
+        alpha=alpha, beta=beta, summary_path=None, reset_cache=reset_cache,
     )
 
 

@@ -22,7 +22,7 @@ This repository contains the full replication package for the paper above. It in
 
 ## How FATE Works
 
-FATE models data preprocessing as a search problem. An *individual* is an ordered list of preprocessing technique names (the chromosome); the GA evolves a population of such lists to maximise:
+FATE is based on a genetic algorithm (in this replication package, there will be references to **Algorithm 1**, which is the high-level pseudocode of the solution reported in the paper). It models data preprocessing as a search problem. An *individual* is an ordered list of preprocessing technique names (the chromosome); the GA evolves a population of such lists to maximise:
 
 ```
 fitness = perf_weight × PS − fair_weight × FS
@@ -51,8 +51,10 @@ where **PS** = mean PR-AUC across 5-fold cross-validation and **FS** = mean `(|S
 │
 ├── FATE_output/               # Created automatically on first run
 │   ├── experiments_results.csv  # One row per successful GA run
-│   ├── fitness_cache.csv        # Evaluation cache (avoids redundant work)
+│   ├── runtime_cache.csv        # Evaluation cache written during runs
 │   └── errors.log               # Created only when errors occur
+│
+├── experiments_cache.csv      # Pre-computed paper results — READ ONLY, never modified
 │
 ├── RQ1_data_analysis/         # RQ1 scripts and pre-computed results
 │   ├── visualizations/          # Generated plots
@@ -77,8 +79,7 @@ where **PS** = mean PR-AUC across 5-fold cross-validation and **FS** = mean `(|S
 │   └── integration/
 │
 ├── run_replication.sh         # One-command replication script
-├── requirements.txt           # Runtime dependencies
-├── requirements-dev.txt       # Dev dependencies (pytest, flake8, radon)
+├── requirements.txt           # Dependencies(pytest, flake8, radon)
 └── .flake8                    # Linter configuration
 ```
 
@@ -95,9 +96,6 @@ source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
-
-# Optional: dev tools (linter, tests, radon)
-pip install -r requirements-dev.txt
 
 # Make the replication script executable
 chmod +x run_replication.sh
@@ -127,10 +125,10 @@ Expected output (values vary across runs):
 ============================================================
   Best pipeline : ['oversampling', 'matching']
   Model         : lr
-  Fitness       : 0.3421
-  Performance   : 0.7183  (mean PR-AUC across 5 CV folds)
-  Fairness      : 0.3762  (mean |SPD|+|EOD|+|DI| / 3)
-  Elapsed       : 47.3 s
+  Fitness       : ...
+  Performance   : ...  (mean PR-AUC across 5 CV folds)
+  Fairness      : ...  (mean |SPD|+|EOD|+|DI| / 3)
+  Elapsed       : ... s
 ============================================================
 ```
 
@@ -138,6 +136,12 @@ Expected output (values vary across runs):
 
 ```bash
 ./run_replication.sh --mode fast --dataset german --model rf --pop 10 --gen 10
+```
+
+**`--reset-cache`** — by default FATE reuses pre-computed results from `experiments_cache.csv` (the paper's full grid, ~7 300 entries). Pass `--reset-cache` to skip that file and run every evaluation fresh, writing results only to `FATE_output/runtime_cache.csv`:
+
+```bash
+./run_replication.sh --mode fast --reset-cache
 ```
 
 **Use your own dataset:** edit the `CONFIGURABLE` block at the top of `run_replication.sh` to set `DEFAULT_DATASET`, `DEFAULT_MODEL`, `DEFAULT_POP`, and `DEFAULT_GEN`. To add a dataset not in the built-in catalogue, write a preparer function in [`preprocessing.py`](preprocessing.py) and register it in the `_DS_CFGS` dict inside the fast-mode Python block of the script.
@@ -244,9 +248,13 @@ TRACEBACK:
     ...
 ```
 
-### `FATE_output/fitness_cache.csv`
+### `FATE_output/runtime_cache.csv`
 
-Thread-safe CSV cache keyed on `(model, protected_attribute, target_column, techniques)`. Prevents redundant fitness evaluations across parallel GA runs. Can be safely deleted to force full recomputation.
+Thread-safe CSV cache written during the current run. Keyed on `(model, protected_attribute, target_column, techniques)`. Accumulates across runs — results from a previous run are reused in the next one. Can be safely deleted without affecting `experiments_cache.csv`.
+
+### `experiments_cache.csv` (root, read-only)
+
+Pre-computed fitness results from the paper's full experiment grid (~7 300 rows). **Never modified by FATE.** When `--reset-cache` is not set, fitness lookups check this file first, making most evaluations instant. When `--reset-cache` is passed, this file is ignored entirely for the run.
 
 ### Approximate runtimes
 
@@ -279,9 +287,11 @@ flowchart TD
 
     subgraph out["FATE_output/"]
         CSV["experiments_results.csv"]
-        CACHE["fitness_cache.csv\nthread-safe evaluation cache"]
+        RCACHE["runtime_cache.csv\nwritten during runs"]
         LOG["errors.log"]
     end
+
+    ROOT["experiments_cache.csv\nread-only · ~7 300 pre-computed rows"]
 
     subgraph analysis["Paper Analysis"]
         RQ1["RQ1_data_analysis/\nparameter sensitivity · FATE vs baselines"]
@@ -294,7 +304,8 @@ flowchart TD
     GA     <-->|"evaluate_population()"| FIT
     FIT     --> PREP
     FIT     --> PRAC
-    FIT    <-.->|"cache hit / miss"| CACHE
+    FIT    <-.->|"cache hit / miss"| RCACHE
+    FIT    -.->|"read-only lookup\n(reset_cache=False)"| ROOT
     MAIN    -->|"success rows"| CSV
     MAIN    -->|"exceptions"| LOG
     CSV     --> RQ1

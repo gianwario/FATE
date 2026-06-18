@@ -10,7 +10,7 @@ totalling up to 108 000 GA evaluations across the grid.
 
 Execution is parallelised with ``concurrent.futures.ThreadPoolExecutor``
 (default ``max_workers=64``).  Results are appended incrementally to
-``output/experiments_results.csv`` by the parent thread after each future
+``FATE_output/experiments_results.csv`` by the parent thread after each future
 completes, so partial results are preserved on interruption.
 
 To avoid BLAS / OpenMP oversubscription in multi-threaded operation, all
@@ -203,7 +203,7 @@ def _build_result_row(ds_path, model_id, protected_attribute, ga_params, best, e
 
     Role in Algorithm 1 output: packages the best individual returned by
     ``genetic_algorithm`` into the CSV schema expected by
-    ``output/experiments_results.csv``.
+    ``FATE_output/experiments_results.csv``.
 
     Parameters
     ----------
@@ -281,7 +281,7 @@ def _append_row_to_csv(summary_path, row):
 
 
 def _run_timed_fate(sample_ready, protected_attribute, target, model_id,
-                    population_size, generations, alpha, beta):
+                    population_size, generations, alpha, beta, reset_cache=False):
     """
     Execute one FATE GA run for a single classifier and return the result with timing.
 
@@ -314,12 +314,13 @@ def _run_timed_fate(sample_ready, protected_attribute, target, model_id,
     start = time.time()
     best = genetic_algorithm(sample_ready, protected_attribute, target, model_id,
                              generations=generations, population_size=population_size,
-                             alpha=alpha, beta=beta)
+                             alpha=alpha, beta=beta, reset_cache=reset_cache)
     return best, time.time() - start
 
 
 def execute_fate(sample_ready, ds_name, ds_path, protected_attribute, target, models,
-                 population_size, generations, alpha=0.5, beta=0.5, summary_path=None):
+                 population_size, generations, alpha=0.5, beta=0.5, summary_path=None,
+                 reset_cache=False):
     """
     Run the FATE genetic algorithm for one dataset / protected-attribute combination
     across multiple classifiers.
@@ -355,6 +356,11 @@ def execute_fate(sample_ready, ds_name, ds_path, protected_attribute, target, mo
         If provided, each result row is immediately appended to this CSV file.
         Pass ``None`` to suppress file I/O (used in worker threads where the
         parent process handles writing).
+    reset_cache : bool, optional
+        Forwarded to ``genetic_algorithm``.  When False (default), fitness
+        evaluations are looked up in the read-only root ``experiments_cache.csv``
+        before running the classifier.  When True, only the runtime cache
+        ``FATE_output/runtime_cache.csv`` is used.
 
     Returns
     -------
@@ -375,7 +381,7 @@ def execute_fate(sample_ready, ds_name, ds_path, protected_attribute, target, mo
         try:
             best, elapsed = _run_timed_fate(
                 sample_ready, protected_attribute, target, model_id,
-                population_size, generations, alpha, beta)
+                population_size, generations, alpha, beta, reset_cache=reset_cache)
             row = _build_result_row(
                 ds_path, model_id, protected_attribute, ga_params, best, elapsed)
             logger.info("[%s/%s/%s] Done  fitness=%.4f  elapsed=%.1fs",
@@ -438,6 +444,10 @@ if __name__ == "__main__":
             'techniques', 'model_used', 'fitness',
             'fairness_score', 'performance_score', 'elapsed_seconds',
         ]).to_csv(summary_path, index=False)
+
+    # False  → use experiments_cache.csv (read-only) as additional lookup source.
+    # True   → skip root cache; only FATE_output/runtime_cache.csv is consulted.
+    reset_cache = False
 
     sample_fraction = 1
     overall_start = time.time()
@@ -510,11 +520,10 @@ if __name__ == "__main__":
         sample_ready = _prepare_data_model(
             sample, ds_cfg['target'], protected_attribute=prot, binarize=False)
 
-        # Bug 1 fix: removed `reset_cache=False` — execute_fate has no such
-        # parameter; passing it caused a TypeError on every worker invocation.
         rows = execute_fate(
             sample_ready, ds_cfg['name'], ds_cfg['path'], prot, ds_cfg['target'], models,
-            population_size=pop, generations=gen, alpha=alpha, beta=beta, summary_path=None)
+            population_size=pop, generations=gen, alpha=alpha, beta=beta, summary_path=None,
+            reset_cache=reset_cache)
         return rows
 
     # set environment to avoid BLAS/OMP oversubscription

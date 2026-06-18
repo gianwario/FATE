@@ -144,8 +144,9 @@ def _evaluate_population(population, dataset, protected_attribute, target_column
     model : str
         Classifier identifier.
     reset_cache : bool
-        Passed to ``fitness.fitness``; True only on the very first call of each
-        GA run to flush stale cache entries.
+        Forwarded unchanged to every ``fitness.fitness`` call.  When False,
+        the root ``experiments_cache.csv`` is used as an additional read-only
+        lookup; when True, only the runtime cache is consulted.
 
     Returns
     -------
@@ -154,11 +155,9 @@ def _evaluate_population(population, dataset, protected_attribute, target_column
         ``(technique_list, model, fitness_value, fairness_score, performance_score)``.
     """
     fitness_scores = []
-    local_reset = reset_cache
     for technique_list in population:
         fit_result = fitness(dataset.copy(), technique_list, model,
-                             protected_attribute, target_column, reset_cache=local_reset)
-        local_reset = False  # only the first call in the run clears the cache
+                             protected_attribute, target_column, reset_cache=reset_cache)
         fitness_scores.append(_unpack_fitness_result(fit_result, technique_list, model))
     return fitness_scores
 
@@ -289,7 +288,7 @@ def _breed_next_generation(best_techniques, population_size, alpha, beta, techni
 # ---------------------------------------------------------------------------
 
 def genetic_algorithm(dataset, protected_attribute, target_column, model, generations=10,
-                      population_size=10, alpha=0.5, beta=0.5):
+                      population_size=10, alpha=0.5, beta=0.5, reset_cache=False):
     """
     Execute the FATE genetic algorithm to find an optimal fairness-aware preprocessing pipeline.
 
@@ -323,6 +322,11 @@ def genetic_algorithm(dataset, protected_attribute, target_column, model, genera
     beta : float, optional
         Mutation probability in [0, 1] (default 0.5).  Higher values increase
         exploration of the technique space (Algorithm 1, Step 5).
+    reset_cache : bool, optional
+        When False (default), fitness lookups also check the read-only root
+        cache ``experiments_cache.csv`` before evaluating.  When True, only
+        the runtime cache ``FATE_output/runtime_cache.csv`` is used — useful
+        for runs that must not reuse pre-computed results.
 
     Returns
     -------
@@ -366,7 +370,6 @@ def genetic_algorithm(dataset, protected_attribute, target_column, model, genera
     ]
 
     population = _initialise_population(techniques, population_size)
-    reset_cache = True
     fitness_scores = []
 
     for generation in range(generations):
@@ -375,7 +378,6 @@ def genetic_algorithm(dataset, protected_attribute, target_column, model, genera
                     generation + 1, generations, len(population))
         fitness_scores = _evaluate_population(population, dataset, protected_attribute,
                                               target_column, model, reset_cache)
-        reset_cache = False
         best_techniques = _select_parents(fitness_scores, population_size)
         population = _breed_next_generation(best_techniques, population_size,
                                             alpha, beta, techniques)
