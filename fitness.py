@@ -24,8 +24,25 @@ techniques — it:
        fitness = perf_weight × PS − fair_weight × FS
 
 A CSV-backed, thread-safe cache (``results/fate/runtime_cache.csv``) prevents
-re-evaluation of identical (model, protected_attribute, target, techniques)
-combinations across parallel GA runs in ``main.py``.
+re-evaluation of identical pipelines, i.e. the same (model, protected_attribute,
+target, ordered list of techniques), across parallel GA runs in ``main.py``.
+
+Floating-point handling (see ``numerics.py`` and README, Section 7):
+
+- Every evaluation runs with ``np.errstate(all='raise')``: an invalid
+  operation raises ``FloatingPointError`` instead of yielding ``inf``/``NaN``.
+- The only relaxed step is the computation of the fairness ratios, which are
+  undefined when a group has no positive predictions or no positive instances
+  in a test fold.  These cases are handled explicitly:
+
+  * a metric that is 0/0 in a fold makes that fold's fairness undefined, and
+    the fold is excluded from the mean FS;
+  * a disparate impact of x/0 (x > 0) is an unbounded disparity: the pipeline
+    is *infeasible*;
+  * a pipeline without any fold with defined fairness is *infeasible*.
+
+  An infeasible pipeline receives fitness ``INFEASIBLE`` (``-inf``), so it
+  ranks below every feasible pipeline and ``NaN`` never reaches the GA.
 
 Classifiers supported (selected via string identifier):
     ``'lr'``  – LogisticRegression (saga solver, L2 penalty, max_iter=1000).
@@ -55,14 +72,12 @@ import paths
 from preprocessing import prepare_data_model
 
 from practices import apply_techniques
+from numerics import (blas_errstate, require_finite, strict_floating_point,
+                      undefined_ratio_errstate)
 from aif360_setup import silence_unused_backend_notices
 # Suppress only aif360's import-time notices about optional back-ends that FATE
-# does not use (see aif360_setup.py).
+# does not use (see aif360_setup.py).  No runtime warning is suppressed.
 silence_unused_backend_notices()
-# Suppress all RuntimeWarnings that aif360 emits during metric computation
-# (e.g. divide-by-zero in disparate_impact when a group has no positive predictions).
-warnings.filterwarnings('ignore', module=r'aif360\..*')
-warnings.filterwarnings('ignore', module=r'inFairness\..*')
 from aif360.datasets import BinaryLabelDataset  # noqa: E402
 from aif360.metrics import ClassificationMetric  # noqa: E402
 
@@ -70,15 +85,19 @@ logger = logging.getLogger(__name__)
 
 #: An individual's chromosome as accepted by ``fitness``: one technique name or
 #: a sequence of names (``None``/empty means "no technique").
-TechniqueSpec = Union[str, list[str], tuple[str, ...], frozenset[str], None]
-#: Cache key: (model, protected attribute, target column, set of techniques).
-CacheKey = tuple[str, str, str, frozenset[str]]
+TechniqueSpec = Union[str, list[str], tuple[str, ...], None]
+#: Cache key: (model, protected attribute, target column, ordered techniques).
+CacheKey = tuple[str, str, str, tuple[str, ...]]
 #: Cache value: (fitness, fairness score, performance score, raw CSV row).
 CacheEntry = tuple[Optional[float], Optional[float], Optional[float], dict[str, str]]
 #: Return value of ``fitness``: (fitness, fairness score, performance score).
 FitnessResult = tuple[float, Optional[float], Optional[float]]
 #: The four classifiers used as optimization tasks.
 Classifier = Union[LogisticRegression, RandomForestClassifier, LinearSVC, XGBClassifier]
+
+#: Fitness of an infeasible pipeline (see module docstring); ranks below any
+#: feasible pipeline when the GA maximises fitness.
+INFEASIBLE = float('-inf')
 
 # Runtime cache — written during the current run (always used for reads and writes).
 RUNTIME_CACHE_PATH = str(paths.RUNTIME_CACHE_CSV)
@@ -99,11 +118,10 @@ def _make_simple_key(model: str, protected_attribute: str, target_column: str,
     """
     Construct a hashable cache key from fitness-call arguments.
 
-    The technique argument is converted to a ``frozenset`` so the cache is
-    order-insensitive: two individuals with the same techniques in different
-    orders are treated as equivalent (applying the same set of techniques
-    produces the same dataset regardless of order under the current sequential
-    application logic).
+    The techniques are kept as an ordered tuple.  Practices are applied in
+    sequence and the order changes the resulting dataset (e.g. oversampling
+    before or after undersampling), so a cached value is reused only for the
+    identical pipeline.
 
     Parameters
     ----------
@@ -119,13 +137,12 @@ def _make_simple_key(model: str, protected_attribute: str, target_column: str,
     Returns
     -------
     tuple
-        ``(model_str, protected_str, target_str, frozenset_of_techniques)``
+        ``(model_str, protected_str, target_str, tuple_of_techniques)``
     """
-    # Convert technique to a frozenset to ignore order
     if isinstance(technique, (list, tuple)):
-        tech_repr = frozenset(technique)
+        tech_repr = tuple(str(t) for t in technique)
     else:
-        tech_repr = frozenset([technique]) if technique else frozenset()
+        tech_repr = (str(technique),) if technique else ()
 
     return (str(model), str(protected_attribute), str(target_column), tech_repr)
 
@@ -143,16 +160,24 @@ def _parse_cache_row_metrics(r: dict[str, str]
     Returns
     -------
     tuple
-        ``(fitness, fairness, performance)`` as floats, or ``None`` for any
-        field that is missing, empty, or non-numeric.
+        ``(fitness, fairness, performance)`` as floats (``None`` for an empty
+        field).  A ``NaN`` fitness, written by versions of the code that did
+        not handle undefined fairness explicitly, is read as ``INFEASIBLE``,
+        so that ``NaN`` never reaches the GA.
+
+    Raises
+    ------
+    ValueError
+        If a non-empty field is not a number (corrupt cache file).
     """
-    try:
-        fitness_val = float(r.get('fitness')) if r.get('fitness') not in (None, '') else None
-        fairness_val = float(r.get('fairness')) if r.get('fairness') not in (None, '') else None
-        perf_val = float(r.get('performance')) if r.get('performance') not in (None, '') else None
-    except Exception:
-        fitness_val = fairness_val = perf_val = None
-    return fitness_val, fairness_val, perf_val
+    def _field(name: str) -> Optional[float]:
+        value = r.get(name)
+        return None if value in (None, '') else float(value)
+
+    fitness_val = _field('fitness')
+    if fitness_val is not None and np.isnan(fitness_val):
+        fitness_val = INFEASIBLE
+    return fitness_val, _field('fairness'), _field('performance')
 
 
 def _load_cache(path: str) -> dict[CacheKey, CacheEntry]:
@@ -160,8 +185,9 @@ def _load_cache(path: str) -> dict[CacheKey, CacheEntry]:
     Load a fitness cache CSV into a dict and return it.
 
     Used at module import time to populate both ``_runtime_cache`` and
-    ``_root_cache``.  Corrupt or missing files are silently ignored and an
-    empty dict is returned so the GA continues without cached results.
+    ``_root_cache``.  A missing file yields an empty cache; a corrupt file
+    raises (``ValueError`` or ``json.JSONDecodeError``) instead of being
+    silently ignored.
 
     Parameters
     ----------
@@ -171,23 +197,19 @@ def _load_cache(path: str) -> dict[CacheKey, CacheEntry]:
     Returns
     -------
     dict
-        ``{(model, protected_attribute, target_column, frozenset(techniques)):
+        ``{(model, protected_attribute, target_column, tuple(techniques)):
            (fitness, fairness, performance, row_dict)}``
     """
     cache = {}
     if not os.path.exists(path):
         return cache
-    try:
-        with open(path, newline='', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for r in reader:
-                key = (r.get('model', ''), r.get('protected_attribute', ''),
-                       r.get('target_column', ''),
-                       frozenset(json.loads(r.get('techniques', '[]'))))
-                fitness_val, fairness_val, perf_val = _parse_cache_row_metrics(r)
-                cache[key] = (fitness_val, fairness_val, perf_val, r)
-    except Exception:
-        pass
+    with open(path, newline='', encoding='utf-8') as f:
+        for r in csv.DictReader(f):
+            key = _make_simple_key(r.get('model', ''), r.get('protected_attribute', ''),
+                                   r.get('target_column', ''),
+                                   json.loads(r.get('techniques') or '[]'))
+            fitness_val, fairness_val, perf_val = _parse_cache_row_metrics(r)
+            cache[key] = (fitness_val, fairness_val, perf_val, r)
     return cache
 
 
@@ -206,7 +228,7 @@ def _append_runtime_cache_row(model: str, protected_attribute: str, target_colum
     model : str
     protected_attribute : str
     target_column : str
-    technique : frozenset or list
+    technique : list or tuple
     fitness : float or None
     fairness : float or None
     performance : float or None
@@ -436,9 +458,8 @@ def _build_aif360_datasets(df_true: pd.DataFrame, df_pred: pd.DataFrame, target_
 
     Raises
     ------
-    Exception
-        Any error raised by the AIF360 constructor is propagated to the caller
-        (``fairness_metrics``) for logging and NaN fallback.
+    ValueError
+        If the frames contain missing values (raised by AIF360).
     """
     kwargs = dict(label_names=[target_column],
                   protected_attribute_names=['__prot_bin__'],
@@ -454,6 +475,13 @@ def _run_aif360_classification_metrics(dataset_true: BinaryLabelDataset,
     """
     Compute SPD, EOD, and DI using AIF360's ``ClassificationMetric``.
 
+    The three metrics are differences and ratios of group rates.  When a group
+    has no positive predictions (or no positive instances) in the fold, a rate
+    or ratio is undefined and AIF360 returns ``NaN`` (0/0) or ``inf`` (x/0).
+    These are the only operations evaluated with relaxed floating-point checks
+    (``undefined_ratio_errstate``); their outcome is handled explicitly by
+    ``_aggregate_fold_fairness`` and ``_compute_combined_fitness``.
+
     Parameters
     ----------
     dataset_true : BinaryLabelDataset
@@ -464,19 +492,13 @@ def _run_aif360_classification_metrics(dataset_true: BinaryLabelDataset,
     tuple
         ``(spd, eod, di)`` — raw scalar values from AIF360.
 
-    Raises
-    ------
-    Exception
-        Any error raised by ``ClassificationMetric`` is propagated to the
-        caller (``fairness_metrics``) for logging and NaN fallback.
     """
     privileged_groups = [{'__prot_bin__': 1}]
     unprivileged_groups = [{'__prot_bin__': 0}]
     metric = ClassificationMetric(dataset_true, dataset_pred,
                                   unprivileged_groups=unprivileged_groups,
                                   privileged_groups=privileged_groups)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', RuntimeWarning)
+    with undefined_ratio_errstate():
         spd = metric.statistical_parity_difference()
         eod = metric.equal_opportunity_difference()
         di = 1 - metric.disparate_impact()
@@ -525,9 +547,11 @@ def fairness_metrics(test_data: pd.DataFrame, test_indices: Union[pd.Index, np.n
     dict
         ``{'statistical_parity': float, 'equal_opportunity': float,
         'disparate_impact': float}``
-        All values are absolute (non-negative).  Returns NaN for any metric
-        that cannot be computed (e.g., protected attribute missing, single
-        class in test fold, AIF360 construction failure).
+        All values are absolute (non-negative).  A metric that is undefined
+        in this fold is ``NaN`` (0/0) or ``inf`` (disparate impact x/0); all
+        three are ``NaN`` when the fold cannot be scored at all (protected
+        attribute missing, non-binary or missing labels).  See
+        ``_aggregate_fold_fairness`` for how these cases are handled.
     """
     preds = pd.Series(predictions, index=test_indices)
     test_df = test_data.loc[test_indices].copy().reset_index(drop=True)
@@ -559,15 +583,11 @@ def fairness_metrics(test_data: pd.DataFrame, test_indices: Union[pd.Index, np.n
 
     try:
         dataset_true, dataset_pred = _build_aif360_datasets(df_true, df_pred, target_column)
-    except Exception as e:
+    except ValueError as e:  # missing values in labels or predictions
         logger.debug("BinaryLabelDataset construction failed: %s", e)
         return _nan_fairness_result()
 
-    try:
-        spd, eod, di = _run_aif360_classification_metrics(dataset_true, dataset_pred)
-    except Exception as e:
-        logger.debug("ClassificationMetric computation failed: %s", e)
-        return _nan_fairness_result()
+    spd, eod, di = _run_aif360_classification_metrics(dataset_true, dataset_pred)
 
     return {
         'statistical_parity': float(abs(spd)) if spd is not None else np.nan,
@@ -587,8 +607,8 @@ def _apply_technique_pipeline(data: pd.DataFrame, technique: TechniqueSpec, prot
 
     Role in Algorithm 1 (Step 2 – technique application before model training):
         Iterates over the technique list and calls ``apply_techniques`` for
-        each token.  Failed applications are silently skipped so the GA can
-        continue if a technique raises an exception on a particular dataset.
+        each token, in order.  Exceptions are not caught: a practice that
+        fails aborts the evaluation instead of being skipped silently.
 
     Parameters
     ----------
@@ -604,17 +624,10 @@ def _apply_technique_pipeline(data: pd.DataFrame, technique: TechniqueSpec, prot
     pd.DataFrame
         Transformed dataset after all techniques have been applied.
     """
-    if isinstance(technique, (list, tuple)):
-        for t in technique:
-            try:
-                data = apply_techniques(data, t, protected_attribute)
-            except Exception:
-                continue  # skip failing techniques; GA continues
-    elif technique:
-        try:
-            data = apply_techniques(data, technique, protected_attribute)
-        except Exception:
-            pass
+    steps = technique if isinstance(technique, (list, tuple)) else [technique] if technique else []
+    with blas_errstate():
+        for t in steps:
+            data = apply_techniques(data, t, protected_attribute)
     return data
 
 
@@ -674,24 +687,24 @@ def _normalise_binary_target(y_series: pd.Series, target_column: str
         ``(y, error_tuple)``
 
         - On success: ``(mapped_series, None)``
-        - On failure: ``(None, (float('inf'), None, None))`` — the error tuple
-          is the sentinel value ``fitness`` returns to the GA.
+        - On failure: ``(None, (INFEASIBLE, None, None))`` — the value
+          ``fitness`` returns to the GA for an infeasible pipeline.
     """
     unique_vals = pd.unique(y_series.dropna())
     if len(unique_vals) == 0:
-        logger.warning("Empty or all-NaN target column '%s' — skipping.", target_column)
-        return None, (float('inf'), None, None)
+        logger.warning("Empty or all-NaN target column '%s' — infeasible.", target_column)
+        return None, (INFEASIBLE, None, None)
     if len(unique_vals) == 1:
-        logger.warning("Single-class target '%s' (unique=%s) — cannot train classifier.",
+        logger.warning("Single-class target '%s' (unique=%s) — infeasible.",
                        target_column, unique_vals)
-        return None, (float('inf'), None, None)
+        return None, (INFEASIBLE, None, None)
     if len(unique_vals) == 2 and set(unique_vals) != {0, 1}:
         mapping = {unique_vals[0]: 0, unique_vals[1]: 1}
         try:
             return y_series.map(mapping).astype(int), None
-        except Exception:
+        except ValueError:  # missing labels cannot be cast to int
             logger.warning("Failed to map binary target values %s to 0/1.", unique_vals)
-            return None, (float('inf'), None, None)
+            return None, (INFEASIBLE, None, None)
     return y_series, None
 
 
@@ -701,8 +714,9 @@ def _score_fold_performance(classifier: Classifier, x_test: pd.DataFrame, y_test
     Compute the performance score (PR-AUC) for one CV fold.
 
     Uses ``predict_proba`` when available, falls back to ``decision_function``,
-    then to the hard predictions themselves.  Falls back to accuracy when the
-    PR-AUC cannot be computed.
+    then to the hard predictions themselves.  Uses accuracy only when the test
+    fold contains a single class, where PR-AUC is undefined.  The scores are
+    checked to be finite.
 
     Parameters
     ----------
@@ -717,31 +731,22 @@ def _score_fold_performance(classifier: Classifier, x_test: pd.DataFrame, y_test
     float
         PR-AUC (or accuracy as fallback).
     """
-    try:
-        accuracy = accuracy_score(y_test, y_pred)
+    if len(np.unique(y_test)) != 2:
+        return float(accuracy_score(y_test, y_pred))
+    with blas_errstate():
         if hasattr(classifier, "predict_proba"):
-            y_scores = classifier.predict_proba(x_test)
-            y_score_pos = (
-                y_scores[:, 1] if y_scores.ndim == 2 and y_scores.shape[1] == 2 else y_scores
-            )
+            y_score_pos = classifier.predict_proba(x_test)[:, 1]
         elif hasattr(classifier, "decision_function"):
             y_score_pos = classifier.decision_function(x_test)
         else:
             y_score_pos = y_pred
-
-        if len(np.unique(y_test)) == 2:
-            return average_precision_score(y_test, y_score_pos)
-        if hasattr(classifier, "predict_proba") and y_scores.ndim == 2:
-            return average_precision_score(y_test, y_scores, average='weighted')
-        return accuracy
-    except Exception:
-        # accuracy defined at top of try; propagates NameError if accuracy_score failed
-        return accuracy
+    require_finite(y_score_pos, "classifier scores")
+    return float(average_precision_score(y_test, y_score_pos))
 
 
 def _aggregate_fold_fairness(fairness_dict: dict[str, float]) -> float:
     """
-    Sum the numeric fairness metric values from one CV fold.
+    Sum SPD, EOD and DI of one CV fold, making undefined cases explicit.
 
     Parameters
     ----------
@@ -751,10 +756,17 @@ def _aggregate_fold_fairness(fairness_dict: dict[str, float]) -> float:
     Returns
     -------
     float
-        Sum of SPD, EOD, and DI for this fold (non-finite values are excluded).
+        - ``NaN`` if any metric is undefined (0/0) in this fold: the fold has
+          no defined fairness and is excluded from FS;
+        - ``inf`` if disparate impact is x/0 (unbounded disparity);
+        - otherwise the finite sum ``|SPD| + |EOD| + |DI|``.
     """
-    return sum(v for v in fairness_dict.values()
-               if isinstance(v, (int, float, np.floating, np.integer)))
+    values = [float(v) for v in fairness_dict.values()]
+    if any(np.isnan(v) for v in values):
+        return float('nan')
+    if any(np.isinf(v) for v in values):
+        return float('inf')
+    return float(sum(values))
 
 
 def _run_kfold_evaluation(x: pd.DataFrame, y: pd.Series, data: pd.DataFrame, model: str,
@@ -791,8 +803,14 @@ def _run_kfold_evaluation(x: pd.DataFrame, y: pd.Series, data: pd.DataFrame, mod
 
         - ``perf_scores`` (list of float): per-fold PR-AUC values.
         - ``fair_scores`` (list of float): per-fold fairness sums.
-        - ``successful_folds`` (int): number of folds that completed without
-          a training error.
+        - ``successful_folds`` (int): number of folds that were evaluated
+          (folds whose training split contains a single class are skipped).
+
+    Raises
+    ------
+    NonFiniteResultError
+        If the classifier produces non-finite scores.  Training errors are
+        not caught.
     """
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
     perf_scores = []
@@ -807,16 +825,11 @@ def _run_kfold_evaluation(x: pd.DataFrame, y: pd.Series, data: pd.DataFrame, mod
             logger.debug("Fold %d skipped: only one class in y_train.", fold_idx)
             continue
 
-        try:
-            classifier = _build_classifier(model)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore', ConvergenceWarning)
-                classifier.fit(x_train, y_train)
+        classifier = _build_classifier(model)
+        with blas_errstate(), warnings.catch_warnings():
+            warnings.simplefilter('ignore', ConvergenceWarning)
+            classifier.fit(x_train, y_train)
             y_pred = classifier.predict(x_test)
-        except Exception as ex:
-            logger.debug("Fold %d training failed for model=%s: %s", fold_idx, model, ex)
-            continue
-
         successful_folds += 1
 
         perf_scores.append(_score_fold_performance(classifier, x_test, y_test, y_pred))
@@ -838,7 +851,10 @@ def _compute_combined_fitness(perf_scores: list[float], fair_scores: list[float]
 
         fitness = perf_weight × PS − fair_weight × FS
 
-    where PS = mean PR-AUC and FS = mean(sum of |SPD|+|EOD|+|DI|) / 3.
+    where PS = mean PR-AUC and FS = mean over the folds with defined fairness
+    of (|SPD| + |EOD| + |DI|) / 3.  The pipeline is infeasible (fitness
+    ``INFEASIBLE``) if a fold has an unbounded disparity (``inf``) or if no
+    fold has defined fairness.
 
     Parameters
     ----------
@@ -850,12 +866,22 @@ def _compute_combined_fitness(perf_scores: list[float], fair_scores: list[float]
     Returns
     -------
     tuple
-        ``(fitness_value, fairness_score, performance_score)``
+        ``(fitness_value, fairness_score, performance_score)``; for an
+        infeasible pipeline ``(INFEASIBLE, inf or nan, performance_score)``.
     """
-    performance_score = float(np.nanmean(perf_scores))
-    fairness_score = (float(np.nanmean(fair_scores)) / 3) if len(fair_scores) > 0 else 0.0
+    require_finite(perf_scores, "performance scores")
+    performance_score = float(np.mean(perf_scores))
+    defined = [f for f in fair_scores if not np.isnan(f)]
+    if len(defined) < len(fair_scores):
+        logger.debug("%d of %d folds without defined fairness excluded from FS",
+                     len(fair_scores) - len(defined), len(fair_scores))
+    if not defined:
+        return INFEASIBLE, float('nan'), performance_score
+    if any(np.isinf(f) for f in defined):
+        return INFEASIBLE, float('inf'), performance_score
+    fairness_score = float(np.mean(defined)) / 3
     fitness_value = (perf_weight * performance_score) - (fair_weight * fairness_score)
-    return fitness_value, fairness_score, performance_score
+    return float(fitness_value), fairness_score, performance_score
 
 
 # ---------------------------------------------------------------------------
@@ -914,19 +940,24 @@ def fitness(data: pd.DataFrame, technique: TechniqueSpec, model: str, protected_
     Returns
     -------
     tuple
-        ``(fitness_value, fairness_score, performance_score)``
-        Returns ``(float('inf'), None, None)`` on catastrophic failure
-        (empty target, single class, or zero successful CV folds).
+        ``(fitness_value, fairness_score, performance_score)``.
+        ``fitness_value`` is ``INFEASIBLE`` (``-inf``) for an infeasible
+        pipeline: empty or single-class target, no evaluable fold, an
+        unbounded disparity, or no fold with defined fairness.
+
+    Raises
+    ------
+    FloatingPointError
+        On any invalid floating-point operation (the evaluation runs under
+        ``np.errstate(all='raise')``, see ``numerics.py``).
+    NonFiniteResultError
+        If the features, the classifier scores or the performance scores
+        contain non-finite values.
 
     Notes
     -----
-    Failed technique applications are silently skipped (``try/except`` in
-    the technique loop) so the GA can continue if a technique crashes on a
-    particular dataset.
-
     A cache hit (keyed on model / protected_attribute / target_column /
-    frozenset(technique)) returns the stored triple immediately without
-    re-evaluating the classifier.
+    ordered techniques) returns the stored triple without re-evaluating.
     """
     key = _make_simple_key(model, protected_attribute, target_column, technique)
 
@@ -942,36 +973,42 @@ def fitness(data: pd.DataFrame, technique: TechniqueSpec, model: str, protected_
         if cached and cached[0] is not None:
             return cached[0], cached[1], cached[2]
 
+    with strict_floating_point():
+        result = _evaluate(data, technique, model, protected_attribute, target_column,
+                           perf_weight, fair_weight)
+    try:
+        _append_runtime_cache_row(model, protected_attribute, target_column, technique,
+                                  *result)
+    except OSError as e:  # the value is still returned; only persistence failed
+        logger.warning("Could not write the runtime cache: %s", e)
+    return result
+
+
+def _evaluate(data: pd.DataFrame, technique: TechniqueSpec, model: str,
+              protected_attribute: str, target_column: str, perf_weight: float,
+              fair_weight: float) -> FitnessResult:
+    """Evaluate one pipeline (body of ``fitness`` without the cache)."""
     data = _apply_technique_pipeline(data, technique, protected_attribute)
-    data = prepare_data_model(data, target_column, protected_attribute)
-    data = data.copy()
+    data = prepare_data_model(data, target_column, protected_attribute).copy()
 
     y = data[target_column]
     x = data.drop(columns=[target_column])
+    require_finite(x, "features after Data Preparation")
 
     y, error_result = _normalise_binary_target(pd.Series(y), target_column)
     if error_result is not None:
         return error_result
 
     if len(y.dropna().value_counts()) < 2:
-        logger.warning("Single class after preprocessing (unique=%s) — returning failure.",
+        logger.warning("Single class after preprocessing (unique=%s) — infeasible.",
                        pd.unique(y))
-        return float('inf'), None, None
+        return INFEASIBLE, None, None
 
     perf_scores, fair_scores, successful_folds = _run_kfold_evaluation(
         x, y, data, model, protected_attribute, target_column)
 
     if successful_folds == 0:
-        logger.warning("No successful CV folds for model=%s — returning failure.", model)
-        return float('inf'), None, None
+        logger.warning("No evaluable CV fold for model=%s — infeasible.", model)
+        return INFEASIBLE, None, None
 
-    fitness_value, fairness_score, performance_score = _compute_combined_fitness(
-        perf_scores, fair_scores, perf_weight, fair_weight)
-
-    try:
-        _append_runtime_cache_row(model, protected_attribute, target_column, technique,
-                                  fitness_value, fairness_score, performance_score)
-    except Exception:
-        pass
-
-    return fitness_value, fairness_score, performance_score
+    return _compute_combined_fitness(perf_scores, fair_scores, perf_weight, fair_weight)

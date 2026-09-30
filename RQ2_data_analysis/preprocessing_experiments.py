@@ -44,7 +44,9 @@ import paths
 import preprocessing as preproc
 from experiment_config import DATASETS_BY_PATH, DatasetConfig
 from fitness import Classifier, fairness_metrics
-from main import execute_fate
+from main import RUN_ERRORS, execute_fate
+from numerics import (blas_errstate, require_finite, strict_floating_point,
+                      undefined_ratio_errstate)
 from preprocessing import prepare_data_model
 
 # AIF360 for Reweighing / DIR
@@ -249,12 +251,21 @@ def _reweighing_training_data(bld_train: BinaryLabelDataset, feature_columns: pd
     -------
     tuple
         ``(x_tr, y_tr, sample_weight)``.
+
+    Notes
+    -----
+    Reweighing computes one weight per (group, label) cell as a ratio of cell
+    counts.  For a cell without instances in the training fold the ratio is
+    0/0; no instance receives that weight, so the ratio is evaluated with
+    relaxed checks and the weights actually assigned are verified to be finite.
     """
     rw = Reweighing(
         unprivileged_groups=[{protected_attr: 0}],
         privileged_groups=[{protected_attr: 1}],
     )
-    bld_rw = rw.fit_transform(bld_train)
+    with undefined_ratio_errstate():
+        bld_rw = rw.fit_transform(bld_train)
+    require_finite(bld_rw.instance_weights, "Reweighing instance weights")
     df_rw = bld_rw.convert_to_dataframe()[0]
     return df_rw[feature_columns], df_rw[target], bld_rw.instance_weights
 
@@ -456,6 +467,17 @@ def run_baseline_method(sample_ready: pd.DataFrame, ds_cfg: DatasetConfig, prote
         - ``fairness_score``: FS = ``(|SPD| + |EOD| + |DI|) / 3``
           averaged across folds.
         - ``elapsed_seconds``: total wall-clock time summed over folds.
+        - ``undefined_fairness_folds``: number of folds in which at least one
+          fairness metric is undefined (see Notes).
+        - ``fairness_undefined``: True when FS itself is undefined and set to
+          ``FS_WHEN_UNDEFINED`` (see Notes).
+
+    Raises
+    ------
+    FloatingPointError
+        On any invalid floating-point operation (strict mode, see ``numerics.py``).
+    NonFiniteResultError
+        If the classifier scores are not finite.
 
     Notes
     -----
@@ -468,7 +490,42 @@ def run_baseline_method(sample_ready: pd.DataFrame, ds_cfg: DatasetConfig, prote
     **FairSMOTE**: in-house implementation that oversamples each
     (y, s) quadrant to the size of the largest quadrant using sampling with
     replacement.
+
+    **Undefined fairness metrics**: a metric that is 0/0 in a test fold (a
+    group without positive predictions or positive instances) is ``NaN`` and
+    is averaged over the folds where it is defined; the number of such folds
+    is reported in ``undefined_fairness_folds``.  If a metric is undefined in
+    every fold, or disparate impact is unbounded (x/0), FS is undefined: this
+    happens when the mitigated classifier never predicts the favourable
+    outcome for a group.  FS is then set to ``FS_WHEN_UNDEFINED`` (1.0, the
+    maximum of the normalised scale) and ``fairness_undefined`` is True.
     """
+    with strict_floating_point():
+        return _evaluate_baseline(sample_ready, ds_cfg, protected_attr, model_id, method_name)
+
+
+#: FS assigned to a baseline whose FS is undefined (maximum of the normalised scale).
+FS_WHEN_UNDEFINED = 1.0
+
+
+def _mean_over_defined_folds(values: list[float]) -> float:
+    """
+    Mean of *values* over the folds where the metric is defined (not ``NaN``).
+
+    Returns ``NaN`` if the metric is undefined in every fold, and ``inf`` if
+    it is unbounded (x/0) in some fold.
+    """
+    defined = [v for v in values if not np.isnan(v)]
+    if not defined:
+        return float("nan")
+    if any(np.isinf(v) for v in defined):
+        return float("inf")
+    return float(np.mean(defined))
+
+
+def _evaluate_baseline(sample_ready: pd.DataFrame, ds_cfg: DatasetConfig, protected_attr: str,
+                       model_id: str, method_name: str) -> dict[str, float]:
+    """Body of ``run_baseline_method`` (runs in strict floating-point mode)."""
     target = ds_cfg["target"]
     df = sample_ready.copy()
 
@@ -490,25 +547,23 @@ def run_baseline_method(sample_ready: pd.DataFrame, ds_cfg: DatasetConfig, prote
         s_train = s.iloc[train_idx]
 
         start = time.time()
-        x_tr, y_tr, sample_weight = _mitigated_training_data(
-            method_name, x_train, y_train, s_train, target, protected_attr)
-        model = build_model(model_id)
-        if sample_weight is not None:
-            model.fit(x_tr, y_tr, sample_weight=sample_weight)
-        else:
-            model.fit(x_tr, y_tr)
-        y_score = _positive_class_scores(model, x_test)
+        with blas_errstate():
+            x_tr, y_tr, sample_weight = _mitigated_training_data(
+                method_name, x_train, y_train, s_train, target, protected_attr)
+            model = build_model(model_id)
+            if sample_weight is not None:
+                model.fit(x_tr, y_tr, sample_weight=sample_weight)
+            else:
+                model.fit(x_tr, y_tr)
+            y_score = _positive_class_scores(model, x_test)
+        require_finite(y_score, f"{method_name} classifier scores")
         y_pred = (y_score >= 0.5).astype(int)
 
         elapsed = time.time() - start
         times.append(elapsed)
 
-        # Performance: PR-AUC
-        try:
-            pr_auc = average_precision_score(y_test, y_score)
-        except Exception:
-            pr_auc = np.nan
-        pr_aucs.append(pr_auc)
+        # Performance: PR-AUC (stratified folds always contain both classes)
+        pr_aucs.append(float(average_precision_score(y_test, y_score)))
 
         # Fairness: your fairness_metrics
         fairness = fairness_metrics(
@@ -522,16 +577,18 @@ def run_baseline_method(sample_ready: pd.DataFrame, ds_cfg: DatasetConfig, prote
         eods.append(fairness["equal_opportunity"])
         dis.append(fairness["disparate_impact"])
 
-    # Aggregate
-    mean_spd = np.nanmean(spds)
-    mean_eod = np.nanmean(eods)
-    mean_di = np.nanmean(dis)
-    fs = compute_fairness_score_from_metrics(mean_spd, mean_eod, mean_di)
+    # Aggregate: each metric over the folds where it is defined
+    means = [_mean_over_defined_folds(v) for v in (spds, eods, dis)]
+    fs_undefined = not all(np.isfinite(m) for m in means)
+    fs = FS_WHEN_UNDEFINED if fs_undefined else compute_fairness_score_from_metrics(*means)
+    undefined = sum(not all(np.isfinite(v) for v in fold) for fold in zip(spds, eods, dis))
 
     return {
-        "performance_score": float(np.nanmean(pr_aucs)),
+        "performance_score": float(np.mean(pr_aucs)),
         "fairness_score": fs,
         "elapsed_seconds": float(np.sum(times)),  # total time over folds
+        "undefined_fairness_folds": int(undefined),
+        "fairness_undefined": bool(fs_undefined),
     }
 
 
@@ -578,16 +635,34 @@ def _fate_rows(sample_ready: pd.DataFrame, ds_cfg: DatasetConfig, cfg_row: pd.Se
         summary_path=None,
         reset_cache=reset_cache,
     )
-    return [{
+    return [_fate_row(ds_cfg, fr) for fr in fate_rows]
+
+
+def _fate_row(ds_cfg: DatasetConfig, fr: dict[str, object]) -> dict[str, object]:
+    """
+    Convert one ``execute_fate`` row to the RQ2 schema.
+
+    A run whose best pipeline is infeasible (fitness ``-inf``) has no valid
+    metrics: it is recorded with an ``error`` so that it is never used in the
+    hypothesis tests.  ``undefined_fairness_folds`` is only tracked for the
+    baselines (FATE handles undefined folds inside its fitness, see
+    ``fitness.py``).
+    """
+    error = fr["error"]
+    if error is None and not np.isfinite(float(fr["fitness"])):
+        error = "no feasible pipeline found"
+    return {
         "dataset_name": ds_cfg["name"],
         "protected_attribute": fr["protected_attribute"],
         "model_identifier": fr["model_identifier"],
         "method": "FATE",
-        "performance_score": fr["performance_score"],
-        "fairness_score": fr["fairness_score"],
+        "performance_score": fr["performance_score"] if error is None else np.nan,
+        "fairness_score": fr["fairness_score"] if error is None else np.nan,
         "elapsed_seconds": fr["elapsed_seconds"],
-        "error": fr["error"],
-    } for fr in fate_rows]
+        "undefined_fairness_folds": np.nan,
+        "fairness_undefined": False if error is None else np.nan,
+        "error": error,
+    }
 
 
 def _baseline_row(sample_ready: pd.DataFrame, ds_cfg: DatasetConfig, prot_attr: str,
@@ -621,11 +696,15 @@ def _baseline_row(sample_ready: pd.DataFrame, ds_cfg: DatasetConfig, prot_attr: 
         metrics = run_baseline_method(sample_ready, ds_cfg, prot_attr, model_id, method_name)
         row.update(performance_score=metrics["performance_score"],
                    fairness_score=metrics["fairness_score"],
-                   elapsed_seconds=metrics["elapsed_seconds"], error=None)
-    except Exception as e:
-        print(f"[ERROR] Baseline {label} failed: {e}")
+                   elapsed_seconds=metrics["elapsed_seconds"],
+                   undefined_fairness_folds=metrics["undefined_fairness_folds"],
+                   fairness_undefined=metrics["fairness_undefined"], error=None)
+    except RUN_ERRORS as e:
+        print(f"[ERROR] Baseline {label} failed: {type(e).__name__}: {e}")
         row.update(performance_score=np.nan, fairness_score=np.nan,
-                   elapsed_seconds=0.0, error=str(e))
+                   elapsed_seconds=0.0, undefined_fairness_folds=np.nan,
+                   fairness_undefined=np.nan,
+                   error=f"{type(e).__name__}: {e}")
     return row
 
 

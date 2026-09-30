@@ -326,17 +326,14 @@ def _map_german_sex_code(v: object) -> int:
     int
         1 for female, 0 for male.
     """
-    try:
-        s = str(v)
-        if 'A95' in s or 'A92' in s:
-            return 1
-        if 'A93' in s or 'A91' in s or 'A94' in s:
-            return 0
-        if 'f' in s.lower():
-            return 1
+    s = str(v)
+    if 'A95' in s or 'A92' in s:
+        return 1
+    if 'A93' in s or 'A91' in s or 'A94' in s:
         return 0
-    except Exception:
-        return 0
+    if 'f' in s.lower():
+        return 1
+    return 0
 
 
 def prepare_german(df: pd.DataFrame) -> pd.DataFrame:

@@ -90,8 +90,9 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     1. Load the FATE grid results (default ``results/fate/experiments_results.csv``;
        pass ``--results reference/fate/experiments_results.csv`` for the paper's run).
-    2. Coerce metric columns to numeric; replace inf / -inf with NaN; drop rows
-       with any invalid metric value.
+    2. Coerce metric columns to numeric and exclude the GA runs whose best
+       pipeline is infeasible (non-finite fitness, README Section 7); their
+       number is printed.
     3. Call ``summarize_group`` for the full parameter grid and for each single
        hyperparameter (population_size, generations, alpha, beta).
     4. Print the top-10 parameter configurations by mean fitness to stdout.
@@ -141,7 +142,8 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     dropped = before - after
     if dropped > 0:
-        print(f"Dropped {dropped} row(s) with invalid metric values (NaN/inf/-inf).")
+        print(f"Excluded {dropped} GA run(s) without a feasible best pipeline "
+              f"(non-finite fitness; see README, Section 7).")
     else:
         print("No invalid metric values detected after cleaning.")
 

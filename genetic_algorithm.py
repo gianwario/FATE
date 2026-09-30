@@ -185,9 +185,9 @@ def _select_parents(fitness_scores: list[ScoredIndividual], population_size: int
     Returns
     -------
     list of list of str
-        Technique lists of the best individuals, sorted by fitness (ascending —
-        lower fitness value first, consistent with the ``sorted`` call on the
-        raw scores).
+        Technique lists of the best individuals, sorted by fitness in
+        descending order (highest fitness first).  Infeasible individuals
+        (fitness ``-inf``, see ``fitness.INFEASIBLE``) rank last.
     """
     sorted_population = sorted(fitness_scores, key=lambda x: x[2], reverse=True)
     best_individuals = sorted_population[:max(1, population_size // 2)]
@@ -391,7 +391,7 @@ def genetic_algorithm(dataset: pd.DataFrame, protected_attribute: str, target_co
         population = _breed_next_generation(best_techniques, population_size,
                                             alpha, beta, techniques)
         gen_elapsed = time.time() - gen_start
-        valid_fits = [s[2] for s in fitness_scores if s[2] is not None and s[2] != float('inf')]
+        valid_fits = [s[2] for s in fitness_scores if s[2] is not None and np.isfinite(s[2])]
         best_fit = max(valid_fits) if valid_fits else float('nan')
         logger.info("Generation %d/%d done  |  %.1fs  |  best fitness %.4f",
                     generation + 1, generations, gen_elapsed, best_fit)

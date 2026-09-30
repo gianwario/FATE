@@ -11,7 +11,7 @@ where PS = mean PR-AUC across folds and FS = mean fairness sum / 3.
 """
 import numpy as np
 
-from fitness import _compute_combined_fitness
+from fitness import INFEASIBLE, _compute_combined_fitness
 
 
 class TestComputeCombinedFitness:
@@ -74,22 +74,48 @@ class TestComputeCombinedFitness:
         np.testing.assert_allclose(fair, 0.3, rtol=1e-9)
         np.testing.assert_allclose(fit, -0.3, rtol=1e-9)
 
-    def test_empty_fairness_scores_defaults_to_zero(self: "TestComputeCombinedFitness") -> None:
+    def test_no_defined_fold_is_infeasible(self: "TestComputeCombinedFitness") -> None:
         """
-        When no folds contribute a fairness measurement, FS defaults to 0.0.
+        When no fold has a defined fairness value, the pipeline is infeasible.
 
-        This can happen when every CV fold raises a fairness metric exception.
-        The fitness function must not crash and should treat the individual as
-        having zero fairness cost (conservative assumption).
+        FS cannot be computed, so the fitness is ``INFEASIBLE`` (-inf) and the
+        individual ranks below every feasible one; ``NaN`` is never returned
+        as fitness (it would make the GA's ranking ill-defined).
+        """
+        for fair_scores in ([], [float('nan'), float('nan')]):
+            fit, fair, perf = _compute_combined_fitness(
+                perf_scores=[0.8, 0.8], fair_scores=fair_scores,
+                perf_weight=0.5, fair_weight=0.5,
+            )
+            assert fit == INFEASIBLE
+            assert np.isnan(fair)
+            np.testing.assert_allclose(perf, 0.8, rtol=1e-9)
+
+    def test_undefined_folds_are_excluded(self: "TestComputeCombinedFitness") -> None:
+        """
+        A fold whose fairness is undefined (0/0) is excluded from FS.
+
+        FS is the mean over the folds with defined fairness: here (0.3 + 0.6) / 2 / 3.
         """
         fit, fair, perf = _compute_combined_fitness(
-            perf_scores=[0.8],
-            fair_scores=[],
-            perf_weight=0.5,
-            fair_weight=0.5,
+            perf_scores=[0.8, 0.8, 0.8], fair_scores=[0.3, float('nan'), 0.6],
+            perf_weight=0.5, fair_weight=0.5,
         )
-        assert fair == 0.0
-        np.testing.assert_allclose(fit, 0.5 * 0.8, rtol=1e-9)
+        np.testing.assert_allclose(fair, 0.15, rtol=1e-9)
+        np.testing.assert_allclose(fit, 0.5 * 0.8 - 0.5 * 0.15, rtol=1e-9)
+
+    def test_unbounded_disparity_is_infeasible(self: "TestComputeCombinedFitness") -> None:
+        """
+        A fold with an unbounded disparity (DI = x/0, fold sum ``inf``) makes the
+        pipeline infeasible, whatever the fairness weight (no ``0 × inf``).
+        """
+        for fair_weight in (0.5, 0.0):
+            fit, fair, _ = _compute_combined_fitness(
+                perf_scores=[0.8, 0.8], fair_scores=[0.3, float('inf')],
+                perf_weight=0.5, fair_weight=fair_weight,
+            )
+            assert fit == INFEASIBLE
+            assert fair == float('inf')
 
     def test_multi_fold_averaging(self: "TestComputeCombinedFitness") -> None:
         """

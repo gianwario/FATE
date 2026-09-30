@@ -58,6 +58,15 @@ from experiment_config import (  # noqa: E402
 )
 from genetic_algorithm import ScoredIndividual, genetic_algorithm  # noqa: E402
 
+#: Errors that make a single GA run fail without invalidating the grid:
+#: numerical errors (``FloatingPointError``, ``numerics.NonFiniteResultError``;
+#: both are ``ArithmeticError``) and data errors raised by pandas/scikit-learn
+#: (``ValueError``).  A failed run is written to ``errors.log`` and never to the
+#: results CSV.  Any other exception is a bug and stops the grid.
+RUN_ERRORS = (ArithmeticError, ValueError)
+#: Additional errors that can occur while loading a task's dataset.
+TASK_ERRORS = RUN_ERRORS + (KeyError, OSError)
+
 logger = logging.getLogger(__name__)
 
 if sys.version_info[:2] != (3, 10):
@@ -285,9 +294,9 @@ def _run_timed_fate(sample_ready: pd.DataFrame, protected_attribute: str, target
 
     Raises
     ------
-    Exception
-        Any exception from ``genetic_algorithm`` is propagated unchanged so
-        that ``execute_fate`` can build a correct error row with timing.
+    ArithmeticError, ValueError
+        Propagated unchanged from ``genetic_algorithm`` so that
+        ``execute_fate`` can build a correct error row with timing.
     """
     start = time.time()
     best = genetic_algorithm(sample_ready, protected_attribute, target, model_id,
@@ -348,8 +357,9 @@ def execute_fate(sample_ready: pd.DataFrame, ds_name: str, ds_path: str, protect
         ``protected_attribute``, ``population_size``, ``generations``,
         ``alpha``, ``beta``, ``techniques``, ``model_used``, ``fitness``,
         ``fairness_score``, ``performance_score``, ``elapsed_seconds``,
-        ``error``.  On exception, numeric fields are ``None`` and ``error``
-        holds the exception message string.
+        ``error``.  If the run raises one of ``RUN_ERRORS``, numeric fields
+        are ``None`` and ``error`` holds the exception type and message; any
+        other exception propagates.
     """
     ga_params = _build_ga_params(population_size, generations, alpha, beta)
     results = []
@@ -365,10 +375,11 @@ def execute_fate(sample_ready: pd.DataFrame, ds_name: str, ds_path: str, protect
                 ds_path, model_id, protected_attribute, ga_params, best, elapsed)
             logger.info("[%s/%s/%s] Done  fitness=%.4f  elapsed=%.1fs",
                         ds_name, protected_attribute, model_id, row['fitness'], elapsed)
-        except Exception as e:
+        except RUN_ERRORS as e:
             elapsed = time.time() - outer_start
             row = _build_error_row(
-                ds_path, model_id, protected_attribute, ga_params, elapsed, str(e))
+                ds_path, model_id, protected_attribute, ga_params, elapsed,
+                f"{type(e).__name__}: {e}")
             logger.warning("[%s/%s/%s] Failed: %s", ds_name, protected_attribute, model_id, e)
         results.append(row)
         _append_row_to_csv(summary_path, row)
@@ -553,7 +564,14 @@ def run_grid(tasks: list[Task], models: list[str], max_workers: int, reset_cache
     Returns
     -------
     tuple of int
-        ``(n_success, n_error)`` summed over all tasks.
+        ``(n_success, n_error)`` summed over all tasks.  Failed runs and
+        tasks (``RUN_ERRORS``, ``TASK_ERRORS``) are counted in ``n_error`` and
+        written to *errors_path* with their traceback.
+
+    Raises
+    ------
+    Exception
+        Any other exception raised by a task is not caught: it stops the grid.
     """
     init_results_csv(summary_path)
     total = len(tasks)
@@ -567,9 +585,9 @@ def run_grid(tasks: list[Task], models: list[str], max_workers: int, reset_cache
             ds_cfg, prot, pop, gen, alpha, beta = task
             try:
                 rows = fut.result()
-            except Exception as exc:  # worker-level failure: log with traceback
+            except TASK_ERRORS as exc:  # task-level failure: log with traceback
                 _write_error_log(errors_path, ds_cfg, prot, pop, gen, alpha, beta,
-                                 str(exc), traceback.format_exc())
+                                 f"{type(exc).__name__}: {exc}", traceback.format_exc())
                 n_err += 1
                 print(f"[{done:{width}}/{total}] FAILED ds={ds_cfg['name']} prot={prot} "
                       f"pop={pop} gen={gen}: {exc}", flush=True)
