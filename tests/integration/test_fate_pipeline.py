@@ -16,6 +16,7 @@ a reduced configuration (2 generations, 4 individuals, LR classifier) to keep
 total wall-clock time under ~60 seconds.
 """
 import numpy as np
+import pandas as pd
 import pytest
 
 VALID_TECHNIQUES = [
@@ -28,7 +29,8 @@ class TestFatePipelineIntegration:
     """End-to-end FATE pipeline tests on a synthetic binary classification dataset."""
 
     @pytest.fixture(autouse=True)
-    def _load_modules_and_dataset(self, synthetic_fate_dataset):
+    def _load_modules_and_dataset(self: 'TestFatePipelineIntegration',
+                                  synthetic_fate_dataset: pd.DataFrame) -> None:
         """
         Import modules inside the fixture so import errors are reported as test
         failures rather than collection errors, making diagnosis easier.
@@ -40,7 +42,7 @@ class TestFatePipelineIntegration:
         self.genetic_algorithm = genetic_algorithm
         self.raw_df = synthetic_fate_dataset
 
-    def test_pipeline_returns_a_tuple(self):
+    def test_pipeline_returns_a_tuple(self: "TestFatePipelineIntegration") -> None:
         """
         ``genetic_algorithm`` must return a non-None tuple.
 
@@ -57,7 +59,7 @@ class TestFatePipelineIntegration:
         assert result is not None
         assert isinstance(result, tuple), f"Expected tuple, got {type(result)}"
 
-    def test_pipeline_returns_five_fields(self):
+    def test_pipeline_returns_five_fields(self: "TestFatePipelineIntegration") -> None:
         """
         The returned tuple must have exactly five fields:
         (techniques, model, fitness_value, fairness_score, performance_score).
@@ -75,7 +77,7 @@ class TestFatePipelineIntegration:
             f"got {len(result)}-tuple: {result}"
         )
 
-    def test_returned_techniques_are_nonempty_list(self):
+    def test_returned_techniques_are_nonempty_list(self: "TestFatePipelineIntegration") -> None:
         """
         The first field of the result must be a non-empty list of technique strings.
 
@@ -94,7 +96,7 @@ class TestFatePipelineIntegration:
         )
         assert len(techniques) > 0, "Best individual must contain at least one technique"
 
-    def test_all_returned_techniques_are_valid(self):
+    def test_all_returned_techniques_are_valid(self: "TestFatePipelineIntegration") -> None:
         """
         Every technique in the best individual's chromosome must belong to the
         eight-element search space T defined in ``practices``.
@@ -113,7 +115,7 @@ class TestFatePipelineIntegration:
                 f"Technique '{t}' is not in the valid search space T={VALID_TECHNIQUES}"
             )
 
-    def test_returned_techniques_have_no_duplicates(self):
+    def test_returned_techniques_have_no_duplicates(self: "TestFatePipelineIntegration") -> None:
         """
         The best individual's chromosome must not contain repeated techniques.
 
@@ -132,7 +134,7 @@ class TestFatePipelineIntegration:
             f"Best individual contains duplicate techniques: {techniques}"
         )
 
-    def test_fitness_score_is_a_finite_float(self):
+    def test_fitness_score_is_a_finite_float(self: "TestFatePipelineIntegration") -> None:
         """
         The fitness value in the result must be a finite float.
 
@@ -155,7 +157,7 @@ class TestFatePipelineIntegration:
             "This indicates all CV folds failed during fitness evaluation."
         )
 
-    def test_fitness_score_is_in_plausible_range(self):
+    def test_fitness_score_is_in_plausible_range(self: "TestFatePipelineIntegration") -> None:
         """
         The fitness value must be in a plausible range for the default weight configuration.
 
@@ -177,7 +179,7 @@ class TestFatePipelineIntegration:
             f"Fitness value {fitness_val} is outside the expected range [−2, 1]"
         )
 
-    def test_model_field_echoes_input(self):
+    def test_model_field_echoes_input(self: "TestFatePipelineIntegration") -> None:
         """
         The model field in the result tuple must echo the model identifier passed in.
 
@@ -193,7 +195,7 @@ class TestFatePipelineIntegration:
             f"Expected model_used='lr'; got '{model_used}'"
         )
 
-    def test_pipeline_raises_on_none_model(self):
+    def test_pipeline_raises_on_none_model(self: "TestFatePipelineIntegration") -> None:
         """
         Passing model=None must raise a ValueError immediately, not produce a
         silent infinity or a cryptic error deep in the sklearn call stack.

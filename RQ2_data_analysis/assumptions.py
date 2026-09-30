@@ -15,17 +15,23 @@ Tests are run for all combinations of:
     Metrics:   fairness_score, performance_score, elapsed_seconds
     Baselines: FairSMOTE, Reweighing, DIR
 
-Input:  ``RQ2_data_analysis/rq2_all_experiments_results.csv``
+Input:  ``results/rq2/rq2_all_experiments_results.csv`` (or ``--input``)
 Output: printed summaries to stdout (no file output).
 """
-import pandas as pd
+import argparse
+from pathlib import Path
+from typing import Optional
+
 import numpy as np
+import pandas as pd
 from scipy.stats import shapiro
+
+import paths
 
 # ---------------------------------------------------------------------
 # CONFIGURATION
 # ---------------------------------------------------------------------
-CSV_PATH = "RQ2_data_analysis/rq2_all_experiments_results.csv"  # <-- adjust if needed
+RESULTS_NAME = "rq2_all_experiments_results.csv"
 
 # column names in your combined CSV:
 # should contain: dataset_name, protected_attribute, model_identifier, method,
@@ -39,7 +45,7 @@ FATE_LABEL = "FATE"
 # ---------------------------------------------------------------------
 
 
-def check_assumptions(df: pd.DataFrame, metric: str, baseline_label: str):
+def check_assumptions(df: pd.DataFrame, metric: str, baseline_label: str) -> None:
     """
     Run the Shapiro–Wilk normality test on paired FATE-vs-baseline differences for one metric.
 
@@ -112,9 +118,16 @@ def check_assumptions(df: pd.DataFrame, metric: str, baseline_label: str):
 # ---------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------
-if __name__ == "__main__":
-    df = pd.read_csv(CSV_PATH)
-
+def main(argv: Optional[list[str]] = None) -> None:
+    """Run the checks for every (metric, baseline) pair."""
+    parser = argparse.ArgumentParser(description="RQ2: distribution checks of paired differences.")
+    parser.add_argument("--input", type=Path, default=paths.RQ2_RESULTS_DIR / RESULTS_NAME)
+    args = parser.parse_args(argv)
+    df = pd.read_csv(args.input)
     for metric in METRICS:
         for baseline in BASELINES:
             check_assumptions(df, metric, baseline)
+
+
+if __name__ == "__main__":
+    main()

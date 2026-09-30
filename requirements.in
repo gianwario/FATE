@@ -1,0 +1,18 @@
+# Direct runtime dependencies of the FATE replication package.
+# The fully pinned lock file (requirements.txt) is generated from this file with:
+#   uv pip compile requirements.in --python-version 3.10 --universal -o requirements.txt
+numpy==2.0.0
+pandas==2.2.2
+scikit-learn==1.5.0
+scipy==1.13.1
+xgboost==1.7.6
+joblib==1.4.2
+# AIF360: fairness metrics, Reweighing, Disparate Impact Remover.
+# [Reductions] pulls in fairlearn, which aif360 probes at import time.
+aif360[Reductions]==0.6.0
+# Required by aif360's DisparateImpactRemover (RQ2 baseline).
+BlackBoxAuditing==0.1.54
+fairlearn==0.14.0
+# Figures (RQ1).
+matplotlib==3.10.9
+seaborn==0.13.2

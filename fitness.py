@@ -23,7 +23,7 @@ techniques — it:
 
        fitness = perf_weight × PS − fair_weight × FS
 
-A CSV-backed, thread-safe cache (``FATE_output/fitness_cache.csv``) prevents
+A CSV-backed, thread-safe cache (``results/fate/runtime_cache.csv``) prevents
 re-evaluation of identical (model, protected_attribute, target, techniques)
 combinations across parallel GA runs in ``main.py``.
 
@@ -40,6 +40,7 @@ import csv
 import json
 import time
 import warnings
+from typing import Optional, Union
 
 import pandas as pd
 import numpy as np
@@ -50,13 +51,16 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import LinearSVC
 from sklearn.exceptions import ConvergenceWarning
 from xgboost import XGBClassifier
+import paths
 from preprocessing import prepare_data_model
 
 from practices import apply_techniques
-# Suppress aif360's import-time logging warnings (tensorflow / inFairness extras)
-# and all RuntimeWarnings that aif360 emits during metric computation
+from aif360_setup import silence_unused_backend_notices
+# Suppress only aif360's import-time notices about optional back-ends that FATE
+# does not use (see aif360_setup.py).
+silence_unused_backend_notices()
+# Suppress all RuntimeWarnings that aif360 emits during metric computation
 # (e.g. divide-by-zero in disparate_impact when a group has no positive predictions).
-logging.getLogger('aif360').setLevel(logging.ERROR)
 warnings.filterwarnings('ignore', module=r'aif360\..*')
 warnings.filterwarnings('ignore', module=r'inFairness\..*')
 from aif360.datasets import BinaryLabelDataset  # noqa: E402
@@ -64,14 +68,22 @@ from aif360.metrics import ClassificationMetric  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-# All FATE output lives in FATE_output/ — never touches pre-existing CSV files.
-_FATE_OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'FATE_output')
-os.makedirs(_FATE_OUTPUT_DIR, exist_ok=True)
+#: An individual's chromosome as accepted by ``fitness``: one technique name or
+#: a sequence of names (``None``/empty means "no technique").
+TechniqueSpec = Union[str, list[str], tuple[str, ...], frozenset[str], None]
+#: Cache key: (model, protected attribute, target column, set of techniques).
+CacheKey = tuple[str, str, str, frozenset[str]]
+#: Cache value: (fitness, fairness score, performance score, raw CSV row).
+CacheEntry = tuple[Optional[float], Optional[float], Optional[float], dict[str, str]]
+#: Return value of ``fitness``: (fitness, fairness score, performance score).
+FitnessResult = tuple[float, Optional[float], Optional[float]]
+#: The four classifiers used as optimization tasks.
+Classifier = Union[LogisticRegression, RandomForestClassifier, LinearSVC, XGBClassifier]
 
 # Runtime cache — written during the current run (always used for reads and writes).
-RUNTIME_CACHE_PATH = os.path.join(_FATE_OUTPUT_DIR, 'runtime_cache.csv')
-# Root cache — pre-computed results from the paper's experiment grid (read-only).
-ROOT_CACHE_PATH = os.path.join(os.path.dirname(__file__), 'experiments_cache.csv')
+RUNTIME_CACHE_PATH = str(paths.RUNTIME_CACHE_CSV)
+# Root cache — pre-computed fitness values from the paper's experiment grid (read-only).
+ROOT_CACHE_PATH = str(paths.REFERENCE_FITNESS_CACHE_CSV)
 
 _runtime_cache_lock = threading.Lock()
 _runtime_cache = {}  # key -> (fitness, fairness, performance, row_dict)
@@ -82,7 +94,8 @@ _root_cache = {}    # key -> (fitness, fairness, performance, row_dict) — neve
 # ---------------------------------------------------------------------------
 
 
-def _make_simple_key(model, protected_attribute, target_column, technique):
+def _make_simple_key(model: str, protected_attribute: str, target_column: str,
+                     technique: TechniqueSpec) -> CacheKey:
     """
     Construct a hashable cache key from fitness-call arguments.
 
@@ -117,7 +130,8 @@ def _make_simple_key(model, protected_attribute, target_column, technique):
     return (str(model), str(protected_attribute), str(target_column), tech_repr)
 
 
-def _parse_cache_row_metrics(r):
+def _parse_cache_row_metrics(r: dict[str, str]
+                             ) -> tuple[Optional[float], Optional[float], Optional[float]]:
     """
     Parse the numeric metric fields from one CSV cache row.
 
@@ -141,7 +155,7 @@ def _parse_cache_row_metrics(r):
     return fitness_val, fairness_val, perf_val
 
 
-def _load_cache(path):
+def _load_cache(path: str) -> dict[CacheKey, CacheEntry]:
     """
     Load a fitness cache CSV into a dict and return it.
 
@@ -177,14 +191,15 @@ def _load_cache(path):
     return cache
 
 
-def _append_runtime_cache_row(model, protected_attribute, target_column, technique,
-                              fitness, fairness, performance):
+def _append_runtime_cache_row(model: str, protected_attribute: str, target_column: str,
+                              technique: TechniqueSpec, fitness: Optional[float],
+                              fairness: Optional[float], performance: Optional[float]) -> None:
     """
     Persist a new fitness result to the runtime cache CSV and update the in-memory dict.
 
     Thread-safe: guarded by ``_runtime_cache_lock`` to allow concurrent GA
     evaluations from ``main.py``'s ``ThreadPoolExecutor``.  Never writes to
-    ``experiments_cache.csv`` (the root read-only cache).
+    ``reference/fate/fitness_cache.csv`` (the root read-only cache).
 
     Parameters
     ----------
@@ -210,6 +225,7 @@ def _append_runtime_cache_row(model, protected_attribute, target_column, techniq
         'extra': ''
     }
     with _runtime_cache_lock:
+        os.makedirs(os.path.dirname(RUNTIME_CACHE_PATH), exist_ok=True)
         first = not os.path.exists(RUNTIME_CACHE_PATH)
         with open(RUNTIME_CACHE_PATH, 'a', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=header)
@@ -230,7 +246,7 @@ _root_cache.update(_load_cache(ROOT_CACHE_PATH))
 # Fairness metrics helpers (fairness_metrics sub-steps)
 # ---------------------------------------------------------------------------
 
-def _nan_fairness_result():
+def _nan_fairness_result() -> dict[str, float]:
     """
     Return the canonical NaN fairness result dict.
 
@@ -247,7 +263,7 @@ def _nan_fairness_result():
             'disparate_impact': np.nan}
 
 
-def _binarise_sex_column(prot_series):
+def _binarise_sex_column(prot_series: pd.Series) -> pd.Series:
     """
     Map the ``sex`` protected attribute to a binary privileged indicator.
 
@@ -269,7 +285,7 @@ def _binarise_sex_column(prot_series):
             .apply(lambda s: 1 if s in ('male', 'm') else 0))
 
 
-def _binarise_race_column(prot_series):
+def _binarise_race_column(prot_series: pd.Series) -> pd.Series:
     """
     Map the ``race`` protected attribute to a binary privileged indicator.
 
@@ -289,7 +305,7 @@ def _binarise_race_column(prot_series):
             .apply(lambda v: 1 if v == 1 else 0))
 
 
-def _binarise_age_column(prot_series):
+def _binarise_age_column(prot_series: pd.Series) -> pd.Series:
     """
     Map the ``age`` protected attribute to a binary privileged indicator.
 
@@ -309,7 +325,8 @@ def _binarise_age_column(prot_series):
     return age_vals.apply(lambda v: 1 if pd.notna(v) and v > mean_age else 0).astype(int)
 
 
-def _binarise_generic_column(prot_series, protected_attribute):
+def _binarise_generic_column(prot_series: pd.Series, protected_attribute: str
+                             ) -> Optional[pd.Series]:
     """
     Map an unrecognised protected attribute to a binary indicator using the majority value.
 
@@ -335,7 +352,8 @@ def _binarise_generic_column(prot_series, protected_attribute):
     return prot_series.fillna('').astype(str).apply(lambda s: 1 if s == str(priv) else 0)
 
 
-def _binarise_protected_column(prot_series, protected_attribute):
+def _binarise_protected_column(prot_series: pd.Series, protected_attribute: str
+                               ) -> Optional[pd.Series]:
     """
     Dispatch to the correct binarisation rule based on the attribute name.
 
@@ -368,7 +386,7 @@ def _binarise_protected_column(prot_series, protected_attribute):
     return _binarise_generic_column(prot_series, protected_attribute)
 
 
-def _coerce_target_to_binary(test_df, target_column):
+def _coerce_target_to_binary(test_df: pd.DataFrame, target_column: str) -> Optional[pd.Series]:
     """
     Coerce the true-label column to a binary {0, 1} series.
 
@@ -398,7 +416,8 @@ def _coerce_target_to_binary(test_df, target_column):
     return None
 
 
-def _build_aif360_datasets(df_true, df_pred, target_column):
+def _build_aif360_datasets(df_true: pd.DataFrame, df_pred: pd.DataFrame, target_column: str
+                           ) -> tuple[BinaryLabelDataset, BinaryLabelDataset]:
     """
     Construct a pair of AIF360 ``BinaryLabelDataset`` objects for metric computation.
 
@@ -429,7 +448,9 @@ def _build_aif360_datasets(df_true, df_pred, target_column):
     return dataset_true, dataset_pred
 
 
-def _run_aif360_classification_metrics(dataset_true, dataset_pred):
+def _run_aif360_classification_metrics(dataset_true: BinaryLabelDataset,
+                                       dataset_pred: BinaryLabelDataset
+                                       ) -> tuple[float, float, float]:
     """
     Compute SPD, EOD, and DI using AIF360's ``ClassificationMetric``.
 
@@ -462,7 +483,9 @@ def _run_aif360_classification_metrics(dataset_true, dataset_pred):
     return spd, eod, di
 
 
-def fairness_metrics(test_data, test_indices, protected_attribute, predictions, target_column):
+def fairness_metrics(test_data: pd.DataFrame, test_indices: Union[pd.Index, np.ndarray],
+                     protected_attribute: str, predictions: np.ndarray, target_column: str
+                     ) -> dict[str, float]:
     """
     Compute fairness metrics for binary classification using AIF360.
 
@@ -557,7 +580,8 @@ def fairness_metrics(test_data, test_indices, protected_attribute, predictions, 
 # Fitness helpers (fitness sub-steps)
 # ---------------------------------------------------------------------------
 
-def _apply_technique_pipeline(data, technique, protected_attribute):
+def _apply_technique_pipeline(data: pd.DataFrame, technique: TechniqueSpec, protected_attribute: str
+                              ) -> pd.DataFrame:
     """
     Apply an individual's chromosome (one or more techniques) to the dataset.
 
@@ -594,7 +618,7 @@ def _apply_technique_pipeline(data, technique, protected_attribute):
     return data
 
 
-def _build_classifier(model):
+def _build_classifier(model: str) -> Classifier:
     """
     Instantiate a fresh classifier by string identifier.
 
@@ -632,7 +656,8 @@ def _build_classifier(model):
     raise ValueError(f"Unknown model identifier: {model}")
 
 
-def _normalise_binary_target(y_series, target_column):
+def _normalise_binary_target(y_series: pd.Series, target_column: str
+                             ) -> tuple[Optional[pd.Series], Optional[FitnessResult]]:
     """
     Validate the target vector and map it to a binary {0, 1} label series.
 
@@ -670,7 +695,8 @@ def _normalise_binary_target(y_series, target_column):
     return y_series, None
 
 
-def _score_fold_performance(classifier, X_test, y_test, y_pred):
+def _score_fold_performance(classifier: Classifier, x_test: pd.DataFrame, y_test: pd.Series,
+                            y_pred: np.ndarray) -> float:
     """
     Compute the performance score (PR-AUC) for one CV fold.
 
@@ -681,10 +707,10 @@ def _score_fold_performance(classifier, X_test, y_test, y_pred):
     Parameters
     ----------
     classifier : fitted sklearn estimator
-    X_test : pd.DataFrame
+    x_test : pd.DataFrame
     y_test : pd.Series
     y_pred : np.ndarray
-        Hard predictions already produced by ``classifier.predict(X_test)``.
+        Hard predictions already produced by ``classifier.predict(x_test)``.
 
     Returns
     -------
@@ -694,12 +720,12 @@ def _score_fold_performance(classifier, X_test, y_test, y_pred):
     try:
         accuracy = accuracy_score(y_test, y_pred)
         if hasattr(classifier, "predict_proba"):
-            y_scores = classifier.predict_proba(X_test)
+            y_scores = classifier.predict_proba(x_test)
             y_score_pos = (
                 y_scores[:, 1] if y_scores.ndim == 2 and y_scores.shape[1] == 2 else y_scores
             )
         elif hasattr(classifier, "decision_function"):
-            y_score_pos = classifier.decision_function(X_test)
+            y_score_pos = classifier.decision_function(x_test)
         else:
             y_score_pos = y_pred
 
@@ -713,7 +739,7 @@ def _score_fold_performance(classifier, X_test, y_test, y_pred):
         return accuracy
 
 
-def _aggregate_fold_fairness(fairness_dict):
+def _aggregate_fold_fairness(fairness_dict: dict[str, float]) -> float:
     """
     Sum the numeric fairness metric values from one CV fold.
 
@@ -731,7 +757,9 @@ def _aggregate_fold_fairness(fairness_dict):
                if isinstance(v, (int, float, np.floating, np.integer)))
 
 
-def _run_kfold_evaluation(X, y, data, model, protected_attribute, target_column, n_splits=5):
+def _run_kfold_evaluation(x: pd.DataFrame, y: pd.Series, data: pd.DataFrame, model: str,
+                          protected_attribute: str, target_column: str, n_splits: int = 5
+                          ) -> tuple[list[float], list[float], int]:
     """
     Train and evaluate the classifier across K folds, collecting performance and fairness scores.
 
@@ -742,7 +770,7 @@ def _run_kfold_evaluation(X, y, data, model, protected_attribute, target_column,
 
     Parameters
     ----------
-    X : pd.DataFrame
+    x : pd.DataFrame
         Feature matrix (protected attribute excluded).
     y : pd.Series
         Binary label vector.
@@ -771,8 +799,8 @@ def _run_kfold_evaluation(X, y, data, model, protected_attribute, target_column,
     fair_scores = []
     successful_folds = 0
 
-    for fold_idx, (train_idx, test_idx) in enumerate(kf.split(X, y), start=1):
-        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+    for fold_idx, (train_idx, test_idx) in enumerate(kf.split(x, y), start=1):
+        x_train, x_test = x.iloc[train_idx], x.iloc[test_idx]
         y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
         if len(pd.unique(y_train.dropna())) < 2:
@@ -783,17 +811,17 @@ def _run_kfold_evaluation(X, y, data, model, protected_attribute, target_column,
             classifier = _build_classifier(model)
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore', ConvergenceWarning)
-                classifier.fit(X_train, y_train)
-            y_pred = classifier.predict(X_test)
+                classifier.fit(x_train, y_train)
+            y_pred = classifier.predict(x_test)
         except Exception as ex:
             logger.debug("Fold %d training failed for model=%s: %s", fold_idx, model, ex)
             continue
 
         successful_folds += 1
 
-        perf_scores.append(_score_fold_performance(classifier, X_test, y_test, y_pred))
+        perf_scores.append(_score_fold_performance(classifier, x_test, y_test, y_pred))
 
-        test_original_idx = X.index[test_idx]
+        test_original_idx = x.index[test_idx]
         fairness_dict = fairness_metrics(data, test_original_idx, protected_attribute,
                                          y_pred, target_column)
         fair_scores.append(_aggregate_fold_fairness(fairness_dict))
@@ -801,7 +829,8 @@ def _run_kfold_evaluation(X, y, data, model, protected_attribute, target_column,
     return perf_scores, fair_scores, successful_folds
 
 
-def _compute_combined_fitness(perf_scores, fair_scores, perf_weight, fair_weight):
+def _compute_combined_fitness(perf_scores: list[float], fair_scores: list[float],
+                              perf_weight: float, fair_weight: float) -> FitnessResult:
     """
     Aggregate per-fold scores into the final fitness value.
 
@@ -833,8 +862,9 @@ def _compute_combined_fitness(perf_scores, fair_scores, perf_weight, fair_weight
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def fitness(data, technique, model, protected_attribute, target_column,
-            perf_weight=0.5, fair_weight=0.5, reset_cache=False):
+def fitness(data: pd.DataFrame, technique: TechniqueSpec, model: str, protected_attribute: str,
+            target_column: str, perf_weight: float = 0.5, fair_weight: float = 0.5,
+            reset_cache: bool = False) -> FitnessResult:
     """
     Evaluate the fitness of a candidate technique list for a given classifier.
 
@@ -875,8 +905,8 @@ def fitness(data, technique, model, protected_attribute, target_column,
         Controls which caches are consulted for lookups (default False).
 
         - ``False``: check ``_runtime_cache`` first, then fall back to the
-          read-only ``experiments_cache.csv`` root cache.  New evaluations are
-          written to ``FATE_output/runtime_cache.csv`` only.
+          read-only ``reference/fate/fitness_cache.csv`` root cache.  New evaluations are
+          written to ``results/fate/runtime_cache.csv`` only.
         - ``True``: skip the root cache entirely; use only the runtime cache.
           Useful when you want a fresh evaluation uncontaminated by the paper's
           pre-computed results.
@@ -917,7 +947,7 @@ def fitness(data, technique, model, protected_attribute, target_column,
     data = data.copy()
 
     y = data[target_column]
-    X = data.drop(columns=[target_column])
+    x = data.drop(columns=[target_column])
 
     y, error_result = _normalise_binary_target(pd.Series(y), target_column)
     if error_result is not None:
@@ -929,7 +959,7 @@ def fitness(data, technique, model, protected_attribute, target_column,
         return float('inf'), None, None
 
     perf_scores, fair_scores, successful_folds = _run_kfold_evaluation(
-        X, y, data, model, protected_attribute, target_column)
+        x, y, data, model, protected_attribute, target_column)
 
     if successful_folds == 0:
         logger.warning("No successful CV folds for model=%s — returning failure.", model)

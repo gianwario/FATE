@@ -36,7 +36,7 @@ from fitness import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_test_data(sex, target):
+def _make_test_data(sex: list[object], target: list[int]) -> pd.DataFrame:
     """Build a minimal test DataFrame from explicit sex and target arrays."""
     n = len(sex)
     return pd.DataFrame(
@@ -50,7 +50,7 @@ def _make_test_data(sex, target):
 # ---------------------------------------------------------------------------
 
 class TestNanFairnessResult:
-    def test_returns_nan_dict(self):
+    def test_returns_nan_dict(self: "TestNanFairnessResult") -> None:
         """
         _nan_fairness_result must return a dict with exactly three keys, all NaN.
 
@@ -70,7 +70,7 @@ class TestNanFairnessResult:
 # ---------------------------------------------------------------------------
 
 class TestBinariseSexColumn:
-    def test_numeric_one_maps_to_privileged(self):
+    def test_numeric_one_maps_to_privileged(self: "TestBinariseSexColumn") -> None:
         """
         Numeric 1 in the sex column must map to 1 (privileged / male).
 
@@ -81,7 +81,7 @@ class TestBinariseSexColumn:
         result = _binarise_sex_column(s)
         np.testing.assert_array_equal(result.values, [1, 0, 1, 0])
 
-    def test_string_male_maps_to_privileged(self):
+    def test_string_male_maps_to_privileged(self: "TestBinariseSexColumn") -> None:
         """
         String 'male' (case-insensitive) must map to 1; 'female' to 0.
 
@@ -95,7 +95,7 @@ class TestBinariseSexColumn:
 
 
 class TestBinariseAgeColumn:
-    def test_above_mean_is_privileged(self):
+    def test_above_mean_is_privileged(self: "TestBinariseAgeColumn") -> None:
         """
         Ages strictly above the column mean map to 1 (privileged).
 
@@ -106,7 +106,7 @@ class TestBinariseAgeColumn:
         result = _binarise_age_column(s)
         np.testing.assert_array_equal(result.values, [0, 0, 1])
 
-    def test_equal_to_mean_is_unprivileged(self):
+    def test_equal_to_mean_is_unprivileged(self: "TestBinariseAgeColumn") -> None:
         """
         Values exactly equal to the mean must NOT be privileged (strict >).
 
@@ -119,7 +119,8 @@ class TestBinariseAgeColumn:
 
 
 class TestBinariseProtectedColumnDispatch:
-    def test_sex_attribute_dispatches_to_sex_rule(self):
+    def test_sex_attribute_dispatches_to_sex_rule(self: 'TestBinariseProtectedColumnDispatch'
+                                                  ) -> None:
         """
         Columns whose name contains 'sex' must use the sex binarisation rule.
 
@@ -130,7 +131,8 @@ class TestBinariseProtectedColumnDispatch:
         result = _binarise_protected_column(s, 'sex')
         np.testing.assert_array_equal(result.values, [1, 0, 1])
 
-    def test_age_attribute_dispatches_to_age_rule(self):
+    def test_age_attribute_dispatches_to_age_rule(self: 'TestBinariseProtectedColumnDispatch'
+                                                  ) -> None:
         """
         Columns whose name contains 'age' must use the mean-threshold rule.
         """
@@ -145,7 +147,7 @@ class TestBinariseProtectedColumnDispatch:
 # ---------------------------------------------------------------------------
 
 class TestFairnessMetricsEndToEnd:
-    def test_missing_protected_attribute_returns_nan(self):
+    def test_missing_protected_attribute_returns_nan(self: "TestFairnessMetricsEndToEnd") -> None:
         """
         When the protected attribute column is absent from test_data, all three
         metrics must return NaN rather than raising an exception.
@@ -164,7 +166,7 @@ class TestFairnessMetricsEndToEnd:
         for k, v in result.items():
             assert np.isnan(v), f"Expected NaN for '{k}' when attribute missing, got {v}"
 
-    def test_equal_positive_rate_gives_zero_spd(self):
+    def test_equal_positive_rate_gives_zero_spd(self: "TestFairnessMetricsEndToEnd") -> None:
         """
         When positive-prediction rates are identical across both groups, SPD must be 0.
 
@@ -187,7 +189,7 @@ class TestFairnessMetricsEndToEnd:
         assert not np.isnan(result['statistical_parity']), "SPD should be computable"
         np.testing.assert_allclose(result['statistical_parity'], 0.0, atol=1e-9)
 
-    def test_unequal_positive_rate_gives_nonzero_spd(self):
+    def test_unequal_positive_rate_gives_nonzero_spd(self: "TestFairnessMetricsEndToEnd") -> None:
         """
         When all positive predictions go to the privileged group, SPD must be > 0.
 
@@ -215,9 +217,9 @@ class TestFairnessMetricsEndToEnd:
         assert result['statistical_parity'] > 0.0, (
             "Unequal positive rates must produce a positive SPD"
         )
-        np.testing.assert_allclose(result['statistical_parity'], 1/3, atol=1e-9)
+        np.testing.assert_allclose(result['statistical_parity'], 1 / 3, atol=1e-9)
 
-    def test_all_metrics_are_non_negative(self):
+    def test_all_metrics_are_non_negative(self: "TestFairnessMetricsEndToEnd") -> None:
         """
         All returned metric values must be non-negative (absolute values).
 
@@ -237,7 +239,7 @@ class TestFairnessMetricsEndToEnd:
             if not np.isnan(v):
                 assert v >= 0.0, f"Metric '{k}' must be non-negative; got {v}"
 
-    def test_result_keys_are_correct(self):
+    def test_result_keys_are_correct(self: "TestFairnessMetricsEndToEnd") -> None:
         """
         The returned dict must have exactly the three keys the fitness function sums.
 

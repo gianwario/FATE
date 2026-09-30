@@ -17,7 +17,7 @@ from fitness import _compute_combined_fitness
 class TestComputeCombinedFitness:
     """Tests for ``_compute_combined_fitness``."""
 
-    def test_basic_formula_correctness(self):
+    def test_basic_formula_correctness(self: "TestComputeCombinedFitness") -> None:
         """
         Verify the fitness formula with hand-computable inputs.
 
@@ -37,10 +37,10 @@ class TestComputeCombinedFitness:
             fair_weight=0.5,
         )
         np.testing.assert_allclose(perf, 0.85, rtol=1e-9)
-        np.testing.assert_allclose(fair, 0.2,  rtol=1e-9)
-        np.testing.assert_allclose(fit,  0.325, rtol=1e-9)
+        np.testing.assert_allclose(fair, 0.2, rtol=1e-9)
+        np.testing.assert_allclose(fit, 0.325, rtol=1e-9)
 
-    def test_performance_only_weight(self):
+    def test_performance_only_weight(self: "TestComputeCombinedFitness") -> None:
         """
         With fair_weight=0, the fitness equals the performance score alone.
 
@@ -55,9 +55,9 @@ class TestComputeCombinedFitness:
             fair_weight=0.0,
         )
         np.testing.assert_allclose(perf, 0.7, rtol=1e-9)
-        np.testing.assert_allclose(fit,  0.7, rtol=1e-9)
+        np.testing.assert_allclose(fit, 0.7, rtol=1e-9)
 
-    def test_fairness_only_weight(self):
+    def test_fairness_only_weight(self: "TestComputeCombinedFitness") -> None:
         """
         With perf_weight=0 the fitness is −fair_weight × FS (should be negative).
 
@@ -74,7 +74,7 @@ class TestComputeCombinedFitness:
         np.testing.assert_allclose(fair, 0.3, rtol=1e-9)
         np.testing.assert_allclose(fit, -0.3, rtol=1e-9)
 
-    def test_empty_fairness_scores_defaults_to_zero(self):
+    def test_empty_fairness_scores_defaults_to_zero(self: "TestComputeCombinedFitness") -> None:
         """
         When no folds contribute a fairness measurement, FS defaults to 0.0.
 
@@ -91,7 +91,7 @@ class TestComputeCombinedFitness:
         assert fair == 0.0
         np.testing.assert_allclose(fit, 0.5 * 0.8, rtol=1e-9)
 
-    def test_multi_fold_averaging(self):
+    def test_multi_fold_averaging(self: "TestComputeCombinedFitness") -> None:
         """
         Verify that performance and fairness are averaged across all folds.
 
@@ -111,7 +111,7 @@ class TestComputeCombinedFitness:
         np.testing.assert_allclose(fair, expected_fair, rtol=1e-9)
         np.testing.assert_allclose(fit, expected_fit, rtol=1e-9)
 
-    def test_fitness_is_float(self):
+    def test_fitness_is_float(self: "TestComputeCombinedFitness") -> None:
         """
         The return values are plain Python floats, not numpy scalars.
 
@@ -119,6 +119,6 @@ class TestComputeCombinedFitness:
         returning numpy floats could cause subtle serialisation errors.
         """
         fit, fair, perf = _compute_combined_fitness([0.8], [0.2], 0.5, 0.5)
-        assert isinstance(fit,  float)
+        assert isinstance(fit, float)
         assert isinstance(fair, float)
         assert isinstance(perf, float)

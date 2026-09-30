@@ -1,0 +1,49 @@
+dataset,protected_attribute,model,baseline,techniques,fitness,fairness,performance
+adult,race,lr,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.27548865772118736,0.19878170099030576,0.7497590164326805
+adult,race,lr,none,[],0.17737564210835807,0.12185622650192486,0.476607510718641
+adult,race,rf,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.46022096122736034,0.06629099864010131,0.986732921094822
+adult,race,rf,none,[],0.3074022181645165,0.1830149589468039,0.7978193952758369
+adult,race,svc,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.25716780509475534,0.2567216007208504,0.7710572109103611
+adult,race,svc,none,[],0.17326350031089371,0.1372565224944813,0.4837835231162687
+adult,race,xgb,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.3626841369602834,0.18973715539659178,0.9151054293171585
+adult,race,xgb,none,[],0.3132689292656742,0.20181811589590334,0.8283559744272517
+adult,sex,lr,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",-0.013184646054717752,0.7942725023001801,0.7679032101907446
+adult,sex,lr,none,[],0.06614509245154879,0.3443173258155434,0.476607510718641
+adult,sex,rf,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",-0.019646576911062585,0.8860104943746964,0.8467173405525712
+adult,sex,rf,none,[],-0.06781226551051767,0.9348835123357668,0.7992589813147315
+adult,sex,svc,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",-0.05865029306052377,0.8872866248578174,0.7699860387367699
+adult,sex,svc,none,[],0.07473821447549664,0.3374081546295377,0.486884583580531
+adult,sex,xgb,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.02311091124616299,0.8435207068196836,0.8897425293120096
+adult,sex,xgb,none,[],0.005766004898484556,0.8168239646302826,0.8283559744272517
+german,sex,lr,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.445522749746079,0.1067274448802414,0.9977729443723995
+german,sex,lr,none,[],-inf,inf,0.3732389708118999
+german,sex,rf,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.3902854436002757,0.21763066543464174,0.9982015526351932
+german,sex,rf,none,[],0.22468817906857003,0.16157593385500668,0.6109522919921467
+german,sex,svc,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.34953667774588704,0.2063607331915455,0.9054340886833195
+german,sex,svc,none,[],0.1927591697512656,0.22552027919927833,0.6110386187018095
+german,sex,xgb,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.36012521939721065,0.15287050859292403,0.8731209473873454
+german,sex,xgb,none,[],0.21347126196793992,0.19397362195985465,0.6209161458957345
+german,age,lr,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",-inf,inf,0.766
+german,age,lr,none,[],-inf,inf,0.3732389708118999
+german,age,rf,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.44129801858127327,0.11463243342575102,0.9972284705882976
+german,age,rf,none,[],0.19742138129970743,0.2022353993428884,0.5970781619423032
+german,age,svc,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.10025132275132273,0.35529100529100527,0.5557936507936507
+german,age,svc,none,[],0.15577465367734653,0.2996361864948665,0.6111854938495596
+german,age,xgb,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.2721134431045146,0.2675873015873016,0.8118141877963307
+german,age,xgb,none,[],0.18417421296455794,0.24139092417684313,0.609739350105959
+heart,sex,lr,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.24815035727571041,0.44496657973774684,0.9412672942891677
+heart,sex,lr,none,[],0.2757640529810499,0.2953903567079064,0.8469184626700063
+heart,sex,rf,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.3056756397493432,0.37495689327974246,0.9863081727784289
+heart,sex,rf,none,[],0.2780076434297548,0.3305987792936238,0.8866140661531334
+heart,sex,svc,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.2772217755948947,0.4224775566688795,0.9769211078586688
+heart,sex,svc,none,[],0.2568285877526223,0.3834425178750795,0.897099693380324
+heart,sex,xgb,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.35877633068105697,0.27691372912801476,0.9944663904901286
+heart,sex,xgb,none,[],0.2794008529681702,0.2890198214504088,0.8478215273867491
+heart,age,lr,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.3946097226809706,0.16144827229697903,0.9506677176589202
+heart,age,lr,none,[],0.2683681651354508,0.3101821323991046,0.8469184626700063
+heart,age,rf,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.4221847446889035,0.15336357287895364,0.9977330622567606
+heart,age,rf,none,[],0.2869569393415943,0.30843777395177935,0.882351652634968
+heart,age,svc,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.3129166666666666,0.25666666666666665,0.8825
+heart,age,svc,none,[],0.3360976724264412,0.22490434852744165,0.897099693380324
+heart,age,xgb,all,"['standard', 'stratified_sampling', 'oversampling', 'undersampling', 'clustering', 'ipw', 'matching', 'min_max_scaling']",0.24668253968253967,0.3422222222222222,0.8355873015873015
+heart,age,xgb,none,[],0.2840131131957193,0.2833897509782861,0.8514159773697247

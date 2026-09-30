@@ -40,7 +40,7 @@ VALID_TECHNIQUES = [
 # ---------------------------------------------------------------------------
 
 class TestUniquePreserveOrder:
-    def test_removes_duplicates(self):
+    def test_removes_duplicates(self: "TestUniquePreserveOrder") -> None:
         """
         Each technique must appear at most once in the output.
 
@@ -51,7 +51,7 @@ class TestUniquePreserveOrder:
         result = _unique_preserve_order(['standard', 'oversampling', 'standard', 'clustering'])
         assert result == ['standard', 'oversampling', 'clustering']
 
-    def test_preserves_insertion_order(self):
+    def test_preserves_insertion_order(self: "TestUniquePreserveOrder") -> None:
         """
         The first occurrence of each element must appear in its original relative order.
 
@@ -63,7 +63,7 @@ class TestUniquePreserveOrder:
         result = _unique_preserve_order(seq)
         assert result == ['clustering', 'ipw', 'matching']
 
-    def test_empty_input_returns_empty(self):
+    def test_empty_input_returns_empty(self: "TestUniquePreserveOrder") -> None:
         """
         An empty sequence must return an empty list without raising an error.
 
@@ -72,7 +72,7 @@ class TestUniquePreserveOrder:
         """
         assert _unique_preserve_order([]) == []
 
-    def test_already_unique_unchanged(self):
+    def test_already_unique_unchanged(self: "TestUniquePreserveOrder") -> None:
         """
         A sequence with no duplicates must be returned unchanged (by value).
 
@@ -82,7 +82,7 @@ class TestUniquePreserveOrder:
         seq = ['standard', 'oversampling', 'clustering']
         assert _unique_preserve_order(seq) == seq
 
-    def test_all_duplicates_single_element(self):
+    def test_all_duplicates_single_element(self: "TestUniquePreserveOrder") -> None:
         """
         A sequence of the same element repeated N times collapses to length 1.
 
@@ -97,14 +97,15 @@ class TestUniquePreserveOrder:
 # ---------------------------------------------------------------------------
 
 class TestSelectParents:
-    def _make_scores(self, fitness_values):
+    def _make_scores(self: 'TestSelectParents', fitness_values: list[float]
+                     ) -> list[tuple[list[str], str, float, float, float]]:
         """Build a fitness_scores list from a flat list of fitness values."""
         return [
             ([f'tech_{i}'], 'lr', fv, 0.1, 0.8)
             for i, fv in enumerate(fitness_values)
         ]
 
-    def test_output_is_subset_of_input_techniques(self):
+    def test_output_is_subset_of_input_techniques(self: "TestSelectParents") -> None:
         """
         Every technique list in the parent pool must have come from the input population.
 
@@ -120,7 +121,7 @@ class TestSelectParents:
                 f"Parent {p} was not present in the evaluated population"
             )
 
-    def test_selects_half_of_population(self):
+    def test_selects_half_of_population(self: "TestSelectParents") -> None:
         """
         Exactly population_size // 2 parents must be selected.
 
@@ -131,7 +132,7 @@ class TestSelectParents:
         parents = _select_parents(scores, population_size=4)
         assert len(parents) == 2
 
-    def test_selects_at_least_one_for_small_population(self):
+    def test_selects_at_least_one_for_small_population(self: "TestSelectParents") -> None:
         """
         At least one parent must be selected even when population_size == 1.
 
@@ -142,7 +143,7 @@ class TestSelectParents:
         parents = _select_parents(scores, population_size=1)
         assert len(parents) >= 1
 
-    def test_selection_picks_highest_fitness(self):
+    def test_selection_picks_highest_fitness(self: "TestSelectParents") -> None:
         """
         ``_select_parents`` must retain the individuals with the HIGHEST fitness.
 
@@ -172,7 +173,7 @@ class TestApplyCrossover:
     PARENT_A = ['standard', 'oversampling', 'clustering']     # {A-set}
     PARENT_B = ['ipw', 'matching', 'min_max_scaling']          # {B-set}
 
-    def test_no_crossover_returns_copy_of_parent_a(self):
+    def test_no_crossover_returns_copy_of_parent_a(self: "TestApplyCrossover") -> None:
         """
         With alpha=0.0 (crossover never fires), the child must be an independent
         copy of parent_a.
@@ -185,7 +186,7 @@ class TestApplyCrossover:
         # Must be a new list object (not the same reference)
         assert child is not self.PARENT_A
 
-    def test_full_crossover_child_elements_from_valid_parents(self):
+    def test_full_crossover_child_elements_from_valid_parents(self: "TestApplyCrossover") -> None:
         """
         With alpha=1.0 (crossover always fires), every element of the child
         must come from parent_a OR parent_b — never from outside.
@@ -202,7 +203,7 @@ class TestApplyCrossover:
                     f"Child element '{elem}' is not from either parent"
                 )
 
-    def test_crossover_child_is_nonempty(self):
+    def test_crossover_child_is_nonempty(self: "TestApplyCrossover") -> None:
         """
         The child produced by crossover must be non-empty.
 
@@ -218,7 +219,7 @@ class TestApplyCrossover:
         child = _apply_crossover(['standard'], ['ipw'], alpha=1.0)
         assert len(child) >= 1
 
-    def test_crossover_with_single_element_parents(self):
+    def test_crossover_with_single_element_parents(self: "TestApplyCrossover") -> None:
         """
         Crossover on single-element parents must not raise an IndexError.
 
@@ -235,7 +236,7 @@ class TestApplyCrossover:
 # ---------------------------------------------------------------------------
 
 class TestApplyMutation:
-    def test_no_mutation_when_beta_zero(self):
+    def test_no_mutation_when_beta_zero(self: "TestApplyMutation") -> None:
         """
         With beta=0.0, the child must be returned identical to its input.
 
@@ -247,7 +248,7 @@ class TestApplyMutation:
         result = _apply_mutation(child, beta=0.0, techniques=VALID_TECHNIQUES)
         assert result == original
 
-    def test_mutation_replaces_one_technique(self):
+    def test_mutation_replaces_one_technique(self: "TestApplyMutation") -> None:
         """
         With beta=1.0 and available alternatives, exactly one position changes.
 
@@ -262,7 +263,7 @@ class TestApplyMutation:
         assert result != child, "Mutation with beta=1.0 must change the child"
         assert len(result) == 1, "Mutation must not change the chromosome length"
 
-    def test_mutated_technique_stays_in_valid_set(self):
+    def test_mutated_technique_stays_in_valid_set(self: "TestApplyMutation") -> None:
         """
         The replacement technique must be a member of the valid search space T.
 
@@ -278,7 +279,7 @@ class TestApplyMutation:
             for t in result:
                 assert t in VALID_TECHNIQUES, f"'{t}' is not a valid technique"
 
-    def test_no_mutation_when_all_techniques_already_present(self):
+    def test_no_mutation_when_all_techniques_already_present(self: "TestApplyMutation") -> None:
         """
         When the child already contains all techniques in T, mutation is a no-op.
 
@@ -290,7 +291,8 @@ class TestApplyMutation:
         result = _apply_mutation(list(full_child), beta=1.0, techniques=VALID_TECHNIQUES)
         assert result == full_child
 
-    def test_mutation_never_introduces_duplicate_in_single_technique_child(self):
+    def test_mutation_never_introduces_duplicate_in_single_technique_child(self: 'TestApplyMutation'
+                                                                           ) -> None:
         """
         The replacement technique must not already be present in the child.
 

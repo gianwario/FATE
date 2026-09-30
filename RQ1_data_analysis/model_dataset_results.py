@@ -1,7 +1,8 @@
 """
 RQ1 best-configuration extractor: top-performing FATE configurations per experimental group.
 
-Reads ``output/experiments_results.csv`` and extracts the best GA
+Reads the FATE grid results (default ``results/fate/experiments_results.csv``)
+and extracts the best GA
 configuration (by fitness) for three levels of grouping:
 
 1. **(dataset × model × protected_attribute)** – best config per group.
@@ -19,15 +20,20 @@ Configuration:
     ``N_BEST``                – number of top configurations to select per group.
     ``GROUP_BY_PROTECTED_ATTR`` – include protected_attribute in the group key.
 """
+import argparse
+from pathlib import Path
+from typing import Optional
+
 import pandas as pd
-csv_path = "../output/experiments_results.csv"  # results CSV path
+
+import paths
 
 # === Config ===
 N_BEST = 1  # top-N per group
 GROUP_BY_PROTECTED_ATTR = True  # set False if you want to ignore protected_attribute
 
 
-def main():
+def main(argv: Optional[list[str]] = None) -> None:
     """
     Extract and save the best FATE configuration rows across several groupings.
 
@@ -36,8 +42,14 @@ def main():
     top-N configuration(s) per group.  All results are printed to stdout and
     saved to CSV files for downstream RQ1 / RQ2 analysis.
     """
+    parser = argparse.ArgumentParser(description="RQ1: best FATE configuration per group.")
+    parser.add_argument("--results", type=Path, default=paths.FATE_RESULTS_CSV)
+    parser.add_argument("--out-dir", type=Path, default=paths.RQ1_RESULTS_DIR)
+    args = parser.parse_args(argv)
+    out_dir = paths.ensure_dir(args.out_dir)
+
     # Load CSV
-    df = pd.read_csv(csv_path)
+    df = pd.read_csv(args.results)
 
     # Sanity check: required columns
     required_cols = [
@@ -69,7 +81,18 @@ def main():
     print(f"Selecting top {N_BEST} configuration(s) per group based on fitness.\n")
 
     # Sort by fitness descending so head(N_BEST) gives top configs
-    df_sorted = df.sort_values(by="fitness", ascending=False)
+    # Stable sort: among configurations tied on fitness, the first one in file
+    # order is kept, so repeated runs on the same input give the same output.
+    df_sorted = df.sort_values(by="fitness", ascending=False, kind="mergesort")
+
+    # Several GA configurations often reach the same best pipeline (and hence
+    # identical fitness, FS and PS).  All tied configurations are saved, so the
+    # configuration reported for each group can be checked against them.
+    group_max = df.groupby(group_cols)["fitness"].transform("max")
+    tied_best = df[df["fitness"] == group_max].sort_values(group_cols, kind="mergesort")
+    tied_best_path = out_dir / "rq1_fate_results_tied_best.csv"
+    tied_best.to_csv(tied_best_path, index=False)
+    print(f"Saved all configurations tied for best fitness to: {tied_best_path}")
 
     # 1) Best per (dataset, model, [protected_attribute])
     best_per_group = (
@@ -100,7 +123,7 @@ def main():
         print()
 
     # Save best per group
-    base = "rq1_fate_results"
+    base = out_dir / "rq1_fate_results"
     best_per_group_path = f"{base}_best_per_group.csv"
     best_per_group.to_csv(best_per_group_path, index=False)
     print(f"Saved best configurations per group to: {best_per_group_path}")

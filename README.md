@@ -1,410 +1,286 @@
 # Replication Package — Data Preparation for Fairness–Performance Trade-Offs
 
 > **Data Preparation for Fairness–Performance Trade-Offs: A Practitioner-Friendly Alternative?**
+> Empirical Software Engineering. Permanent archive: [10.5281/zenodo.21329487](https://doi.org/10.5281/zenodo.21329487).
 
-This repository contains the full replication package for the paper above. It includes the implementation of **FATE** (Fairness-Aware Technique Evolution), a genetic-algorithm-based method that searches for the optimal sequence of fairness-aware preprocessing techniques for a given dataset and classifier, along with all datasets, experiment scripts, and analysis code needed to reproduce RQ1 and RQ2.
-
----
+This package contains the implementation of **FATE** (Fairness-Aware Trade-Off Enhancement), the datasets, the scripts that produce every table and figure of RQ1 and RQ2, and the archived outputs of the runs reported in the paper.
 
 ## Table of Contents
 
-- [How FATE Works](#how-fate-works)
-- [Repository Layout](#repository-layout)
-- [Setup](#setup)
-- [Quick Start](#quick-start)
-- [Reproducing the Paper Results](#reproducing-the-paper-results)
-- [Output Reference](#output-reference)
-- [Code Structure](#code-structure)
-- [Tests](#tests)
-- [Code Quality](#code-quality)
+1. [Quick start](#1-quick-start)
+2. [Setup](#2-setup)
+3. [Replication pipeline and data flow](#3-replication-pipeline-and-data-flow)
+4. [Repository contents](#4-repository-contents)
+5. [Results versus reference outputs](#5-results-versus-reference-outputs)
+6. [Output file reference](#6-output-file-reference)
+7. [Fitness cache](#7-fitness-cache)
+8. [How the code maps to the paper](#8-how-the-code-maps-to-the-paper)
+9. [Tests and code quality](#9-tests-and-code-quality)
+10. [Use of AI assistance](#10-use-of-ai-assistance)
+11. [Development history](#11-development-history)
 
 ---
 
-## How FATE Works
-
-FATE is based on a genetic algorithm (in this replication package, there will be references to **Algorithm 1**, which is the high-level pseudocode of the solution reported in the paper). It models data preprocessing as a search problem. An *individual* is an ordered list of preprocessing technique names (the chromosome); the GA evolves a population of such lists to maximise:
-
-```
-fitness = perf_weight × PS − fair_weight × FS
-```
-
-where **PS** = mean PR-AUC across 5-fold cross-validation and **FS** = mean `(|SPD| + |EOD| + |DI|) / 3` across the same folds. Higher fitness means better performance with less fairness deviation.
-
-**Search space T** (8 techniques): `standard`, `stratified_sampling`, `oversampling`, `undersampling`, `clustering`, `ipw`, `matching`, `min_max_scaling`.
-
-**Fairness metrics** (computed via AIF360, privileged = group with attribute value 1):
-
-- **SPD** — Statistical Parity Difference
-- **EOD** — Equal Opportunity Difference
-- **DI** — Disparate Impact deviation (`|1 − DI_ratio|`)
-
----
-
-## Repository Layout
-
-```
-.
-├── datasets/                  # Input datasets
-│   ├── adult.csv
-│   ├── german.csv
-│   └── heart.csv
-│
-├── FATE_output/               # Created automatically on first run
-│   ├── experiments_results.csv  # One row per successful GA run
-│   ├── runtime_cache.csv        # Evaluation cache written during runs
-│   └── errors.log               # Created only when errors occur
-│
-├── experiments_cache.csv      # Pre-computed paper results — READ ONLY, never modified
-│
-├── RQ1_data_analysis/         # RQ1 scripts and pre-computed results
-│   ├── visualizations/          # Generated plots
-│   ├── configurations_results.py
-│   ├── model-dataset_results.py
-│   ├── rq1_results.py
-│   └── rq1_visualizations.py
-│
-├── RQ2_data_analysis/         # RQ2 scripts and pre-computed results
-│   ├── assumptions.py
-│   ├── preprocessing_experiments.py
-│   └── rq2_results.py
-│
-├── fitness.py                 # Fitness evaluation (Step 2 of Algorithm 1)
-├── genetic_algorithm.py       # Core GA (Algorithm 1, Steps 1–6)
-├── practices.py               # The 8 preprocessing techniques (search space T)
-├── preprocessing.py           # Dataset normalisation and feature preparation
-├── main.py                    # Experiment orchestrator (parallel GA runs)
-│
-├── tests/                     # pytest test suite (45 tests)
-│   ├── unit/
-│   └── integration/
-│
-├── run_replication.sh         # One-command replication script
-├── requirements.txt           # Dependencies(pytest, flake8, radon)
-└── .flake8                    # Linter configuration
-```
-
----
-
-## Setup
-
-**Python 3.10 is required.** The pipeline checks the version at startup and exits with a clear error on any other version.
+## 1. Quick start
 
 ```bash
-# Create and activate a virtual environment
+python3.10 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+./run_replication.sh --mode fast                      # one GA run: installation check
+./run_replication.sh --mode analysis --from-reference # RQ1 + RQ2 from the paper's archived FATE grid
+./run_replication.sh --mode all --reset-cache         # complete replication from scratch
+```
+
+All commands are run from the repository root.
+
+---
+
+## 2. Setup
+
+**Python 3.10 is required.** `main.py` stops with an explicit error on any other version, and `run_replication.sh` checks the version before running anything.
+
+```bash
 python3.10 -m venv venv
 source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Make the replication script executable
-chmod +x run_replication.sh
+pip install -r requirements.txt        # runtime dependencies
+pip install -r requirements-dev.txt    # optional: tests, coverage, linting, complexity
 ```
+
+| File                                               | Content                                                                                                                                                                        |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `requirements.in`                                | Direct runtime dependencies, with the reason for each non-obvious one.                                                                                                         |
+| `requirements.txt`                               | Lock file generated from`requirements.in` (`uv pip compile requirements.in --python-version 3.10 --universal -o requirements.txt`). Every transitive dependency is pinned. |
+| `requirements-dev.in` / `requirements-dev.txt` | Same, plus pytest, coverage, flake8 (with flake8-annotations and pep8-naming) and radon.                                                                                       |
+
+**AIF360 import notices.** On import, AIF360 probes optional back-ends (TensorFlow, inFairness/PyTorch) used only by in-processing algorithms that FATE does not use, and logs one notice per missing back-end. These multi-gigabyte packages are deliberately not installed. `aif360_setup.py` suppresses exactly these two notices and nothing else, so a notice about any other missing dependency is still shown.
 
 ---
 
-## Quick Start
+## 3. Replication pipeline and data flow
 
-Run FATE once on the Adult dataset with Logistic Regression to verify everything works and see what the algorithm finds:
-
-```bash
-./run_replication.sh --mode fast
-```
-
-Expected output (values vary across runs):
-
-```
-=== Running FATE ===
-  dataset = adult
-  model   = lr
-  pop     = 5
-  gen     = 5
-
-============================================================
-  FATE result
-============================================================
-  Best pipeline : ['oversampling', 'matching']
-  Model         : lr
-  Fitness       : ...
-  Performance   : ...  (mean PR-AUC across 5 CV folds)
-  Fairness      : ...  (mean |SPD|+|EOD|+|DI| / 3)
-  Elapsed       : ... s
-============================================================
-```
-
-**Override the defaults** from the command line:
-
-```bash
-./run_replication.sh --mode fast --dataset german --model rf --pop 10 --gen 10
-```
-
-**`--reset-cache`** — by default FATE reuses pre-computed results from `experiments_cache.csv` (the paper's full grid, ~7 300 entries). Pass `--reset-cache` to skip that file and run every evaluation fresh, writing results only to `FATE_output/runtime_cache.csv`:
-
-```bash
-./run_replication.sh --mode fast --reset-cache
-```
-
-**Use your own dataset:** edit the `CONFIGURABLE` block at the top of `run_replication.sh` to set `DEFAULT_DATASET`, `DEFAULT_MODEL`, `DEFAULT_POP`, and `DEFAULT_GEN`. To add a dataset not in the built-in catalogue, write a preparer function in [`preprocessing.py`](preprocessing.py) and register it in the `_DS_CFGS` dict inside the fast-mode Python block of the script.
-
-> **Note:** Fast mode is designed to verify the pipeline runs correctly and explore what FATE finds — not to reproduce the exact numbers from the paper. Use `--mode full` for that.
-
----
-
-## Reproducing the Paper Results
-
-### Step 1 — Run the FATE experiment grid
-
-The full grid covers 3 datasets × 4 classifiers × 2 protected attributes × 6 population sizes × 6 generation counts × 5 × 5 crossover/mutation rates (≈ 5 400 GA runs). Runs are parallelised with 64 worker threads.
-
-```bash
-./run_replication.sh --mode full
-```
-
-Estimated runtime: **24–48 hours** on a 64-core machine.
-
-Restrict the grid for partial replication:
-
-```bash
-# Single dataset
-./run_replication.sh --mode full --dataset adult
-
-# Single dataset + model + fixed hyperparameters
-./run_replication.sh --mode full --dataset adult --model lr --pop 50 --gen 50
-```
-
-Progress is printed after every completed task:
-
-```
-[  1/5400] ds=adult prot=sex pop=5 gen=5 a=0 b=0  ok=4 err=0
-[  2/5400] ds=adult prot=sex pop=5 gen=5 a=0 b=0.25  ok=4 err=0
-...
-```
-
-Alternatively, run the orchestrator directly (skips environment checks and output validation):
-
-```bash
-python main.py
-```
-
-### Step 2 — RQ1: Optimization behaviour and parameter sensitivity
-
-Analyses how GA hyperparameters affect FATE's ability to find near-optimal pipelines, and compares FATE against two static baselines (*no practices*, *all practices*).
-
-```bash
-python RQ1_data_analysis/rq1_results.py
-python RQ1_data_analysis/rq1_visualizations.py
-```
-
-Outputs: `rq1_fate_vs_baselines.csv`, sensitivity summaries, and figures saved to `RQ1_data_analysis/visualizations/`.
-
-### Step 3 — RQ2: Comparison against state-of-the-art methods
-
-Statistically compares FATE-selected pipelines against FairSMOTE, Reweighing, and Disparate Impact Remover using Wilcoxon signed-rank tests and Vargha–Delaney A₁₂ effect sizes.
-
-```bash
-python RQ2_data_analysis/assumptions.py        # normality checks (justifies Wilcoxon)
-python RQ2_data_analysis/rq2_results.py        # hypothesis tests (H1a–H3c)
-```
-
-Outputs: `rq2_hypothesis_tests.csv` and statistical summaries.
-
----
-
-## Output Reference
-
-### `FATE_output/experiments_results.csv`
-
-One row per successful GA run, appended incrementally (interrupting a run preserves completed rows).
-
-| Column                  | Type  | Description                                                |
-| ----------------------- | ----- | ---------------------------------------------------------- |
-| `dataset`             | str   | Path to the raw CSV file                                   |
-| `model_identifier`    | str   | Classifier:`lr`, `rf`, `svc`, or `xgb`             |
-| `protected_attribute` | str   | Protected attribute evaluated (`sex`, `race`, `age`) |
-| `population_size`     | int   | GA population size                                         |
-| `generations`         | int   | Number of GA generations                                   |
-| `alpha`               | float | Crossover probability                                      |
-| `beta`                | float | Mutation probability                                       |
-| `techniques`          | str   | Python list repr of the best technique pipeline found      |
-| `model_used`          | str   | Echoes `model_identifier`                                |
-| `fitness`             | float | Combined score:`perf_weight × PS − fair_weight × FS`  |
-| `fairness_score`      | float | Mean of Fairness Metrics (SPD, AOD, EOD)                   |
-| `performance_score`   | float | Mean PR-AUC across CV folds                                |
-| `elapsed_seconds`     | float | Wall-clock time for this GA run                            |
-
-### `FATE_output/errors.log`
-
-Created only when errors occur. Each entry records either a worker-level exception (dataset load failure, missing column) with a full traceback, or a per-model GA failure without one. A clean run produces no file.
-
-```
-================================================================================
-TIMESTAMP:  2025-01-15T14:32:07
-DATASET:    adult (datasets/adult.csv)
-PROTECTED:  sex
-PARAMS:     pop=10 gen=5 alpha=0.5 beta=0.5
-ERROR:      model=xgb: <exception message>
-TRACEBACK:
-  Traceback (most recent call last):
-    ...
-```
-
-### `FATE_output/runtime_cache.csv`
-
-Thread-safe CSV cache written during the current run. Keyed on `(model, protected_attribute, target_column, techniques)`. Accumulates across runs — results from a previous run are reused in the next one. Can be safely deleted without affecting `experiments_cache.csv`.
-
-### `experiments_cache.csv` (root, read-only)
-
-Pre-computed fitness results from the paper's full experiment grid (~7 300 rows). **Never modified by FATE.** When `--reset-cache` is not set, fitness lookups check this file first, making most evaluations instant. When `--reset-cache` is passed, this file is ignored entirely for the run.
-
-### Approximate runtimes
-
-| Configuration                                  | Estimated time |
-| ---------------------------------------------- | -------------- |
-| Fast mode default (adult / lr / pop=5 / gen=5) | 1–3 min       |
-| Full grid, single dataset + model              | 4–8 hours     |
-| Full grid, all datasets (64 workers)           | 24–48 hours   |
-
----
-
-## Code Structure
-
-Each module maps to a component in **Figure 4** of the paper. The diagram below shows how data and control flow through the system; the table that follows maps every box to the implementing code.
-
-### Module Dependency Diagram
+The pipeline has three stages. Each stage reads only files produced by the previous stage (or, optionally, the archived paper outputs in `reference/`), and writes only under `results/`.
 
 ```mermaid
 flowchart TD
-    DS[(datasets/\nadult · german · heart)]
+    DS[(datasets/*.csv)]
+    CFG[experiment_config.py<br/>datasets · models · GA grid]
+    REFC[(reference/fate/fitness_cache.csv<br/>optional, read-only)]
 
-    subgraph fate["FATE Pipeline"]
-        direction TB
-        MAIN["main.py\nExperiment orchestrator\n64 parallel workers"]
-        GA["genetic_algorithm.py\nAlgorithm 1 — Steps 1 · 3 · 4 · 5 · 6\npopulation · selection · crossover · mutation"]
-        FIT["fitness.py\nAlgorithm 1 — Step 2\nKFold CV  ·  PR-AUC  ·  SPD / EOD / DI"]
-        PREP["preprocessing.py\ndata normalisation & encoding"]
-        PRAC["practices.py\nsearch space T  (8 techniques)"]
+    subgraph S1["Stage 1 — FATE grid (main.py)"]
+        MAIN[main.py → genetic_algorithm.py → fitness.py<br/>practices.py · preprocessing.py]
+    end
+    FR[results/fate/experiments_results.csv]
+    FE[results/fate/errors.log]
+    RC[results/fate/runtime_cache.csv]
+
+    subgraph S2["Stage 2 — RQ1"]
+        C1[configurations_results] --> P1[rq1_fate_by_*.csv<br/>rq1_fate_full_paramgrid_summary.csv]
+        C2[model_dataset_results] --> P2[rq1_fate_results_best_per_group.csv<br/>best_per_model · best_per_dataset_attr · tied_best]
+        C3[rq1_results] --> P3[rq1_baselines_results.csv<br/>rq1_fate_vs_baselines.csv]
+        C4[rq1_visualizations] --> P4[results/rq1/figures/*.pdf,png<br/>Fig. 2, Fig. 3]
     end
 
-    subgraph out["FATE_output/"]
-        CSV["experiments_results.csv"]
-        RCACHE["runtime_cache.csv\nwritten during runs"]
-        LOG["errors.log"]
+    subgraph S3["Stage 3 — RQ2"]
+        C5[preprocessing_experiments] --> P5[rq2_all_experiments_results.csv]
+        C6[rq2_results] --> P6[rq2_hypothesis_tests.csv<br/>Table 4]
     end
 
-    ROOT["experiments_cache.csv\nread-only · ~7 300 pre-computed rows"]
-
-    subgraph analysis["Paper Analysis"]
-        RQ1["RQ1_data_analysis/\nparameter sensitivity · FATE vs baselines"]
-        RQ2["RQ2_data_analysis/\nFATE vs FairSMOTE · Reweighing · DIR"]
-    end
-
-    DS      --> MAIN
-    DS      --> FIT
-    MAIN    -->|"execute_fate()"| GA
-    GA     <-->|"evaluate_population()"| FIT
-    FIT     --> PREP
-    FIT     --> PRAC
-    FIT    <-.->|"cache hit / miss"| RCACHE
-    FIT    -.->|"read-only lookup\n(reset_cache=False)"| ROOT
-    MAIN    -->|"success rows"| CSV
-    MAIN    -->|"exceptions"| LOG
-    CSV     --> RQ1
-    CSV     --> RQ2
+    DS --> MAIN
+    CFG --> MAIN
+    REFC -.-> MAIN
+    MAIN --> FR & FE & RC
+    FR --> C1 & C2
+    P2 --> C3
+    DS --> C3 & C5
+    P1 & P3 --> C4
+    P2 --> C5
+    P5 --> C6
 ```
 
-### Figure 4 Component Map
+| Stage                           | Command (from the repo root)                                | Reads                                                                   | Writes                                                                                                                                           |
+| ------------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1 · FATE grid                  | `python main.py` (all options: `python main.py --help`) | `datasets/*.csv`; optionally `reference/fate/fitness_cache.csv`     | `results/fate/experiments_results.csv`, `results/fate/errors.log` (only if a run fails), `results/fate/runtime_cache.csv`                  |
+| 2a · RQ1 parameter sensitivity | `python -m RQ1_data_analysis.configurations_results`      | `results/fate/experiments_results.csv`                                | `results/rq1/rq1_fate_by_{population_size,generations,alpha,beta}.csv`, `results/rq1/rq1_fate_full_paramgrid_summary.csv`                    |
+| 2b · RQ1 best configurations   | `python -m RQ1_data_analysis.model_dataset_results`       | `results/fate/experiments_results.csv`                                | `results/rq1/rq1_fate_results_best_per_group.csv` (Table 3), `…_best_per_model.csv`, `…_best_per_dataset_attr.csv`, `…_tied_best.csv` |
+| 2c · RQ1 baselines             | `python -m RQ1_data_analysis.rq1_results`                 | `results/rq1/rq1_fate_results_best_per_group.csv`, `datasets/*.csv` | `results/rq1/rq1_baselines_results.csv`, `results/rq1/rq1_fate_vs_baselines.csv`                                                             |
+| 2d · RQ1 figures               | `python -m RQ1_data_analysis.rq1_visualizations`          | outputs of 2a and 2c                                                    | `results/rq1/figures/` (Fig. 2 boxplots, Fig. 3 parameter plots)                                                                               |
+| 3a · RQ2 experiments           | `python -m RQ2_data_analysis.preprocessing_experiments`   | `results/rq1/rq1_fate_results_best_per_group.csv`, `datasets/*.csv` | `results/rq2/rq2_all_experiments_results.csv` (FATE re-runs + FairSMOTE, Reweighing, DIR)                                                      |
+| 3b · RQ2 hypothesis tests      | `python -m RQ2_data_analysis.rq2_results`                 | `results/rq2/rq2_all_experiments_results.csv`                         | `results/rq2/rq2_hypothesis_tests.csv` (Table 4)                                                                                               |
+| 3c · RQ2 distribution checks   | `python -m RQ2_data_analysis.assumptions`                 | `results/rq2/rq2_all_experiments_results.csv`                         | console output only                                                                                                                              |
 
-| Figure 4 Component                            | Module                                                                                            | Key function(s)                                                    |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| Input datasets                                | `datasets/`                                                                                     | raw CSV files                                                      |
-| Dataset-specific normalisation                | [`preprocessing.py`](preprocessing.py)                                                             | `prepare_adult`, `prepare_german`, `prepare_heart`           |
-| Generic data preparation                      | [`preprocessing.py`](preprocessing.py)                                                             | `prepare_data_model`, `encode_and_impute`, `binarize_target` |
-| Search space*T* (technique genes)           | [`practices.py`](practices.py)                                                                     | `apply_techniques`, `apply_*`                                  |
-| **Step 1 — Population initialisation** | [`genetic_algorithm.py`](genetic_algorithm.py)                                                     | `_initialise_population`                                         |
-| **Step 2 — Fitness evaluation**        | [`fitness.py`](fitness.py)                                                                         | `fitness` → `_run_kfold_evaluation`, `fairness_metrics`     |
-| **Step 3 — Selection**                 | [`genetic_algorithm.py`](genetic_algorithm.py)                                                     | `_select_parents`                                                |
-| **Step 4 — Crossover**                 | [`genetic_algorithm.py`](genetic_algorithm.py)                                                     | `_apply_crossover` (single-point, prob. α)                      |
-| **Step 5 — Mutation**                  | [`genetic_algorithm.py`](genetic_algorithm.py)                                                     | `_apply_mutation` (technique replacement, prob. β)              |
-| Duplicate removal                             | [`genetic_algorithm.py`](genetic_algorithm.py)                                                     | `_unique_preserve_order`                                         |
-| Experiment orchestration                      | [`main.py`](main.py)                                                                               | `execute_fate`, `_run_timed_fate`, `worker_task`             |
-| RQ1 — parameter sensitivity                  | [`RQ1_data_analysis/configurations_results.py`](RQ1_data_analysis/configurations_results.py)       | `summarize_group`                                                |
-| RQ1 — best configuration extraction          | [`RQ1_data_analysis/model-dataset_results.py`](RQ1_data_analysis/model-dataset_results.py)         | `main`                                                           |
-| RQ1 — FATE vs baselines                      | [`RQ1_data_analysis/rq1_results.py`](RQ1_data_analysis/rq1_results.py)                             | `compute_baselines`                                              |
-| RQ1 — visualisations                         | [`RQ1_data_analysis/rq1_visualizations.py`](RQ1_data_analysis/rq1_visualizations.py)               | `plot_fate_vs_baselines`, `make_all_param_plots`               |
-| RQ2 — baseline experiments                   | [`RQ2_data_analysis/preprocessing_experiments.py`](RQ2_data_analysis/preprocessing_experiments.py) | `run_rq2`, `run_baseline_method`                               |
-| RQ2 — Wilcoxon tests & A₁₂                 | [`RQ2_data_analysis/rq2_results.py`](RQ2_data_analysis/rq2_results.py)                             | `compare_method`, `vargha_delaney_a12`                         |
-| RQ2 — normality assumption checks            | [`RQ2_data_analysis/assumptions.py`](RQ2_data_analysis/assumptions.py)                             | `check_assumptions`                                              |
+`run_replication.sh` chains these commands:
 
-### Core FATE modules
+| Mode                                 | Runs                                                                                                                                               | Typical use                                               |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `--mode fast`                      | Stage 1 with a single GA run (default`adult / lr / sex / N=5 / G=5 / α=β=0.5`; override with `--dataset`, `--model`, `--pop`, `--gen`) | Installation check                                        |
+| `--mode full`                      | Stage 1 on the full grid (restrict it with`--dataset`, `--model`, `--pop`, `--gen`)                                                        | Re-generating the FATE grid                               |
+| `--mode analysis`                  | Stages 2 and 3 on`results/fate/experiments_results.csv`                                                                                          | Analyses after a grid run                                 |
+| `--mode analysis --from-reference` | Stages 2 and 3 starting from`reference/fate/experiments_results.csv`                                                                             | Re-deriving RQ1/RQ2 without re-running the multi-day grid |
+| `--mode all`                       | Stage 1 (full grid), then stages 2 and 3                                                                                                           | Complete replication from scratch                         |
 
-**[`genetic_algorithm.py`](genetic_algorithm.py)** — Algorithm 1 end-to-end. The single public function `genetic_algorithm` runs all six steps: population initialisation, fitness evaluation, selection, crossover, mutation, and duplicate removal. Individuals are variable-length ordered lists of unique technique names drawn from the eight-element search space in `practices.py`.
+Add `--reset-cache` to any mode to compute every fitness value during the run instead of reusing the archived cache (see [Section 7](#7-fitness-cache)).
 
-**[`fitness.py`](fitness.py)** — Step 2 of Algorithm 1. Applies the technique pipeline to the data, trains the classifier under 5-fold CV, and returns the composite `fitness = perf_weight × PS − fair_weight × FS` score. Includes a thread-safe CSV cache to avoid redundant evaluations across parallel GA runs.
-
-**[`practices.py`](practices.py)** — The search space T. Each of the eight functions (`apply_standard_transformation`, `apply_stratified_sampling`, `apply_oversampling`, `apply_undersampling`, `apply_clustering`, `apply_ipw`, `apply_matching`, `apply_min_max_scaling`) is one gene. The dispatcher `apply_techniques` is the single entry point called by `fitness()` for each token in a chromosome.
-
-**[`preprocessing.py`](preprocessing.py)** — Two layers of data preparation: dataset-specific normalisers (`prepare_adult`, `prepare_german`, `prepare_heart`) and the generic pipeline `prepare_data_model` (one-hot encoding, median imputation, optional target binarisation).
-
-**[`main.py`](main.py)** — Experiment orchestrator. Runs the full parameter-grid search parallelised with `ThreadPoolExecutor` (64 workers). Writes successful rows to `FATE_output/experiments_results.csv` and errors to `FATE_output/errors.log`, keeping the two cleanly separated.
-
-### Analysis modules
-
-**[`RQ1_data_analysis/configurations_results.py`](RQ1_data_analysis/configurations_results.py)** — Aggregates fitness/fairness/performance statistics by individual GA hyperparameter and by full configuration.
-
-**[`RQ1_data_analysis/model-dataset_results.py`](RQ1_data_analysis/model-dataset_results.py)** — Extracts the best FATE configuration per (dataset × model × protected attribute) group; its output is the primary input for RQ2.
-
-**[`RQ1_data_analysis/rq1_results.py`](RQ1_data_analysis/rq1_results.py)** — Evaluates the two static baselines and merges them with FATE results.
-
-**[`RQ1_data_analysis/rq1_visualizations.py`](RQ1_data_analysis/rq1_visualizations.py)** — Generates all RQ1 figures: FATE-vs-baselines boxplots and hyperparameter sensitivity line plots.
-
-**[`RQ2_data_analysis/preprocessing_experiments.py`](RQ2_data_analysis/preprocessing_experiments.py)** — Re-evaluates the best FATE configurations against FairSMOTE, Reweighing, and Disparate Impact Remover under 5-fold CV.
-
-**[`RQ2_data_analysis/rq2_results.py`](RQ2_data_analysis/rq2_results.py)** — Runs Wilcoxon signed-rank tests and Vargha–Delaney A₁₂ for all nine hypotheses (H1a–H3c).
-
-**[`RQ2_data_analysis/assumptions.py`](RQ2_data_analysis/assumptions.py)** — Shapiro–Wilk normality checks on paired differences, justifying the non-parametric Wilcoxon test.
+**Every stage-level script accepts explicit paths**, so any intermediate file can be regenerated in isolation, e.g. `python -m RQ2_data_analysis.rq2_results --input reference/rq2/rq2_all_experiments_results.csv --out /tmp/tests.csv`.
 
 ---
 
-## Tests
+## 4. Repository contents
 
-The test suite uses **pytest** and covers Algorithm 1 at two granularities:
+Every versioned file is listed below. Nothing else is needed to run the package.
 
-| Directory              | What is tested                                                 |
-| ---------------------- | -------------------------------------------------------------- |
-| `tests/unit/`        | Individual functions with known inputs and expected outputs    |
-| `tests/integration/` | The full FATE pipeline end-to-end on a small synthetic dataset |
-
-```bash
-pytest tests/          # full suite (~5 s, 45 tests)
-pytest tests/unit/     # unit tests only (<3 s)
-pytest tests/integration/  # integration test only (~4 s)
-```
-
-Expected result:
-
-```
-collected 45 items
-
-tests/integration/test_fate_pipeline.py .........   [  9/45]
-tests/unit/test_fairness_metrics.py  ............   [21/45]
-tests/unit/test_fitness_computation.py ......        [27/45]
-tests/unit/test_genetic_operators.py  ...........   [45/45]
-
-45 passed in ~5s
-```
+| Path                                                                                           | Role                                                                                                           | Produced by                   | Consumed by                               |
+| ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ----------------------------- | ----------------------------------------- |
+| **Code — FATE**                                                                         |                                                                                                                |                               |                                           |
+| `main.py`                                                                                    | Stage 1 orchestrator and CLI: builds the grid, runs GA runs in parallel, writes results and errors separately  | –                            | `run_replication.sh`, RQ2 stage 3a      |
+| `genetic_algorithm.py`                                                                       | Algorithm 1: initialisation, selection, crossover, mutation, duplicate removal                                 | –                            | `main.py`                               |
+| `fitness.py`                                                                                 | Fitness evaluation (Step 2 of Algorithm 1): practices, 5-fold CV, PR-AUC, SPD/EOD/DI via AIF360, fitness cache | –                            | `genetic_algorithm.py`, RQ1/RQ2 scripts |
+| `practices.py`                                                                               | The eight fairness-aware Data Preparation practices (search space*T*)                                        | –                            | `fitness.py`                            |
+| `preprocessing.py`                                                                           | Dataset-specific normalisers and generic model preparation                                                     | –                            | all stages                                |
+| `experiment_config.py`                                                                       | Single definition of datasets, protected attributes, models, practices and GA grid (Table 2)                   | –                            | all stages                                |
+| `paths.py`                                                                                   | Single definition of every input/output location                                                               | –                            | all stages                                |
+| `aif360_setup.py`                                                                            | Suppresses AIF360's notices about the two unused back-ends ([Section 2](#2-setup))                              | –                            | `fitness.py`, RQ2 stage 3a              |
+| **Code — analyses**                                                                     |                                                                                                                |                               |                                           |
+| `RQ1_data_analysis/configurations_results.py`                                                | Stage 2a                                                                                                       | –                            | –                                        |
+| `RQ1_data_analysis/model_dataset_results.py`                                                 | Stage 2b                                                                                                       | –                            | –                                        |
+| `RQ1_data_analysis/rq1_results.py`                                                           | Stage 2c                                                                                                       | –                            | –                                        |
+| `RQ1_data_analysis/rq1_visualizations.py`                                                    | Stage 2d                                                                                                       | –                            | –                                        |
+| `RQ2_data_analysis/preprocessing_experiments.py`                                             | Stage 3a                                                                                                       | –                            | –                                        |
+| `RQ2_data_analysis/rq2_results.py`                                                           | Stage 3b                                                                                                       | –                            | –                                        |
+| `RQ2_data_analysis/assumptions.py`                                                           | Stage 3c                                                                                                       | –                            | –                                        |
+| `RQ1_data_analysis/__init__.py`, `RQ2_data_analysis/__init__.py`, `tests/**/__init__.py` | Package markers (empty)                                                                                        | –                            | Python                                    |
+| **Entry point and tooling**                                                              |                                                                                                                |                               |                                           |
+| `run_replication.sh`                                                                         | Environment check and pipeline driver ([Section 3](#3-replication-pipeline-and-data-flow))                      | –                            | user                                      |
+| `scripts/quality_report.sh`                                                                  | Regenerates the code-quality evidence ([Section 9](#9-tests-and-code-quality))                                  | –                            | user                                      |
+| `tests/`                                                                                     | pytest suite (unit and integration)                                                                            | –                            | pytest                                    |
+| `.flake8`                                                                                    | Linter configuration (provided by the reviewers, used verbatim)                                                | –                            | flake8                                    |
+| `requirements*.in`, `requirements*.txt`                                                    | Dependencies ([Section 2](#2-setup))                                                                            | –                            | pip                                       |
+| `.gitignore`, `.gitattributes`                                                             | Git configuration (`results/` is ignored; LF line endings for code)                                          | –                            | git                                       |
+| `docs/code_quality.md`                                                                       | flake8 and full-codebase Radon report                                                                          | `scripts/quality_report.sh` | reader                                    |
+| **Inputs**                                                                               |                                                                                                                |                               |                                           |
+| `datasets/adult.csv`, `datasets/german.csv`, `datasets/heart.csv`                        | Raw benchmark datasets (UCI)                                                                                   | –                            | all stages                                |
+| **Archived paper outputs (read-only, [Section 5](#5-results-versus-reference-outputs))**  |                                                                                                                |                               |                                           |
+| `reference/fate/experiments_results.csv`                                                     | FATE grid of the paper (Stage 1 output)                                                                        | Stage 1, paper run            | Stage 2 with`--from-reference`          |
+| `reference/fate/fitness_cache.csv`                                                           | Fitness values computed during the paper's grid                                                                | Stage 1, paper run            | `fitness.py` unless `--reset-cache`   |
+| `reference/rq1/*.csv`                                                                        | RQ1 tables of the paper (Stage 2 outputs, same names as in`results/rq1/`)                                    | Stage 2, paper run            | comparison only                           |
+| `reference/rq1/figures/*`                                                                    | Figures 2 and 3 of the paper                                                                                   | Stage 2d, paper run           | comparison only                           |
+| `reference/rq2/rq2_all_experiments_results.csv`                                              | RQ2 per-method results of the paper                                                                            | Stage 3a, paper run           | Stage 3b with`--input`                  |
+| `reference/rq2/rq2_hypothesis_tests.csv`                                                     | Table 4 of the paper                                                                                           | Stage 3b, paper run           | comparison only                           |
+| `reference/rq2/rq2_experiments_cache.csv`                                                    | Fitness cache of the FATE runs of the paper's RQ2 experiment, kept for provenance                              | Stage 3a, paper run           | not read by any script                    |
+| **Generated at run time (not versioned)**                                                |                                                                                                                |                               |                                           |
+| `results/fate/`, `results/rq1/`, `results/rq2/`                                          | Outputs of the current run ([Section 6](#6-output-file-reference))                                              | Stages 1–3                   | next stage                                |
 
 ---
 
-## Code Quality
+## 5. Results versus reference outputs
 
-The project is linted with **flake8** (max line length 99, config in [`.flake8`](.flake8)):
+- **`results/`** holds everything produced by *your* run. It does not exist in a fresh clone and is git-ignored, so a replication always starts empty.
+- **`reference/`** holds the outputs of the runs reported in the paper. No script writes to it. It mirrors the structure of `results/` (same file names), so the two can be compared file by file.
+
+Using the reference grid, stages 2–3 reproduce the archived analyses exactly:
+
+| Regenerated from`reference/`                                                        | Compared with                              | Outcome                                                                                |
+| ------------------------------------------------------------------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `rq1_fate_by_*.csv`, `rq1_fate_full_paramgrid_summary.csv`                        | `reference/rq1/`                         | Identical                                                                              |
+| `rq2_hypothesis_tests.csv` (from `reference/rq2/rq2_all_experiments_results.csv`) | `reference/rq2/rq2_hypothesis_tests.csv` | Identical                                                                              |
+| `rq1_fate_results_best_per_group.csv`                                               | `reference/rq1/` (Table 3)               | Identical fitness, FS, PS and pipelines for all 24 groups. See the note on ties below. |
+
+**Ties in Table 3.** Many GA configurations reach the same best pipeline, and therefore the same fitness, FS and PS. Stage 2b keeps the first tied configuration in file order and also writes *all* tied configurations to `rq1_fate_results_tied_best.csv`. Every configuration reported in the paper appears in that file.
+
+**Re-running FATE.** The genetic algorithm is stochastic, so a new Stage 1 run (or the FATE re-runs in Stage 3a) produces values close to, but not identical with, those in `reference/`. The numbers in the paper are those in `reference/`.
+
+---
+
+## 6. Output file reference
+
+### `results/fate/experiments_results.csv` (Stage 1)
+
+One row per successful GA run, appended as soon as the run completes (an interruption keeps completed rows).
+
+| Column                               | Type  | Description                                                   |
+| ------------------------------------ | ----- | ------------------------------------------------------------- |
+| `dataset`                          | str   | Path of the raw dataset                                       |
+| `model_identifier`                 | str   | `lr`, `rf`, `svc` or `xgb`                            |
+| `protected_attribute`              | str   | `sex`, `race` or `age`                                  |
+| `population_size`, `generations` | int   | GA parameters N and G                                         |
+| `alpha`, `beta`                  | float | Crossover and mutation rates                                  |
+| `techniques`                       | str   | Best pipeline found (Python list)                             |
+| `model_used`                       | str   | Echoes`model_identifier`                                    |
+| `fitness`                          | float | `0.5 × PS − 0.5 × FS`                                    |
+| `fairness_score`                   | float | FS = mean over folds of (\|SPD\| + \|EOD\| + \|1 − DI\|) / 3 |
+| `performance_score`                | float | PS = mean PR-AUC over the 5 folds                             |
+| `elapsed_seconds`                  | float | Wall-clock time of the GA run                                 |
+
+### `results/fate/errors.log` (Stage 1)
+
+Created only if a run fails. Each entry records the timestamp, dataset, protected attribute, GA parameters, error message and, for worker-level failures, the full traceback. Failed runs never appear in the results CSV.
+
+### `results/rq2/rq2_all_experiments_results.csv` (Stage 3a)
+
+One row per (dataset, protected attribute, model, method), with `method` ∈ {FATE, FairSMOTE, Reweighing, DIR} and columns `performance_score`, `fairness_score`, `elapsed_seconds`, `error`.
+
+### `results/rq2/rq2_hypothesis_tests.csv` (Stage 3b)
+
+One row per hypothesis H1a–H3c: metric, direction, baseline, number of pairs, means, p-value, Vargha–Delaney A₁₂ (raw and direction-adjusted), significance and winner.
+
+---
+
+## 7. Fitness cache
+
+`fitness.py` caches fitness values keyed on (model, protected attribute, target, set of practices), so identical pipelines are not re-evaluated.
+
+| Cache          | Location                             | Read                    | Written                 |
+| -------------- | ------------------------------------ | ----------------------- | ----------------------- |
+| Runtime cache  | `results/fate/runtime_cache.csv`   | always                  | by every new evaluation |
+| Archived cache | `reference/fate/fitness_cache.csv` | unless`--reset-cache` | never                   |
+
+- **From scratch:** pass `--reset-cache` (to `run_replication.sh`, `main.py` or stage 3a). The archived cache is ignored and every fitness value is computed during the run.
+- **Clearing the runtime cache:** delete `results/fate/runtime_cache.csv`, or the whole `results/` folder. The archived cache is never modified.
+
+---
+
+## 8. How the code maps to the paper
+
+| Paper element                                    | Module                                                                     | Function(s)                                                                                   |
+| ------------------------------------------------ | -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Algorithm 1, Step 1 — population initialisation | `genetic_algorithm.py`                                                   | `_initialise_population`                                                                    |
+| Algorithm 1, Step 2 — fitness evaluation        | `fitness.py`                                                             | `fitness` → `_run_kfold_evaluation`, `fairness_metrics`, `_compute_combined_fitness` |
+| Algorithm 1, Step 3 — selection                 | `genetic_algorithm.py`                                                   | `_select_parents`                                                                           |
+| Algorithm 1, Step 4 — crossover                 | `genetic_algorithm.py`                                                   | `_apply_crossover`                                                                          |
+| Algorithm 1, Step 5 — mutation                  | `genetic_algorithm.py`                                                   | `_apply_mutation`                                                                           |
+| Duplicate-practice removal                       | `genetic_algorithm.py`                                                   | `_unique_preserve_order`                                                                    |
+| Algorithm 1 (end to end)                         | `genetic_algorithm.py`                                                   | `genetic_algorithm`                                                                         |
+| Search space*T* (Section 4.2.1)                | `practices.py`, `experiment_config.py`                                 | `apply_*`, `apply_techniques`, `TECHNIQUES`                                             |
+| Table 1 — metrics                               | `fitness.py`                                                             | `fairness_metrics`, `_score_fold_performance`, `_compute_combined_fitness`              |
+| Table 2 — experimental setup                    | `experiment_config.py`                                                   | `DATASETS`, `MODELS`, `POPULATION_SIZES`, `GENERATION_COUNTS`, `RATES`              |
+| Table 3 — best configurations                   | `RQ1_data_analysis/model_dataset_results.py`                             | `main`                                                                                      |
+| Fig. 2 — FATE vs baselines                      | `RQ1_data_analysis/rq1_results.py`, `rq1_visualizations.py`            | `compute_baselines`, `plot_fate_vs_baselines`                                             |
+| Fig. 3 — GA parameter effects                   | `RQ1_data_analysis/configurations_results.py`, `rq1_visualizations.py` | `summarize_group`, `make_all_param_plots`                                                 |
+| RQ2 baselines (Section 4.2.4)                    | `RQ2_data_analysis/preprocessing_experiments.py`                         | `run_rq2`, `run_baseline_method`                                                          |
+| Table 4 — hypothesis tests                      | `RQ2_data_analysis/rq2_results.py`                                       | `compare_method`, `vargha_delaney_a12`                                                    |
+
+---
+
+## 9. Tests and code quality
 
 ```bash
-flake8 .
+pip install -r requirements-dev.txt
+pytest                         # unit and integration tests
+flake8 .                       # linter, configuration in .flake8
+radon cc -s -a .               # cyclomatic complexity of the whole codebase
+./scripts/quality_report.sh    # all of the above, including branch coverage
 ```
 
-Cyclomatic complexity is tracked with **radon** — all functions in the core modules grade A or B:
+- **Linter.** `.flake8`: line length 100, maximum complexity 10, naming conventions (pep8-naming) and type annotations (flake8-annotations). The codebase passes it with no warnings; every function and method is type-annotated.
+- **Complexity.** Radon is applied to every module, including the RQ1/RQ2 scripts and the tests. The full per-function report is in `docs/code_quality.md`.
+- **Test isolation.** Tests use a temporary fitness cache and never write to `results/`.
 
-```bash
-radon cc fitness.py genetic_algorithm.py main.py -s
-```
+---
+
+## 10. Use of AI assistance
+
+<!-- AUTHORS: confirm/complete before release -->
+
+The FATE algorithm, the experimental design and the original experiment code used to produce the results reported in the paper were written by the authors with the support of OpenAI ChatGPT's assistance only on rewriting and improvement duties. AI coding assistants were used during the two revision rounds of the replication package, with every change reviewed by the authors, who take full responsibility for the code:
+
+- **First revision:** Claude Code (Anthropic) assisted with docstrings, refactoring for lower cyclomatic complexity, the pytest suite, linting fixes and `run_replication.sh`.
+- **Second revision:** Claude (Anthropic) assisted with the dependency lock files, the output-folder reorganisation, the linter-driven type annotations and refactorings, and this README.

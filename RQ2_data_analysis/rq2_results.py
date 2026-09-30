@@ -13,45 +13,52 @@ For each combination of (metric × baseline method), this module:
 4. Labels the outcome: ``FATE_better``, ``Baseline_better``, ``No_diff``, or
    ``Tie``.
 
-Results are saved to ``RQ2_data_analysis/rq2_hypothesis_tests.csv`` and support
+Results are saved to ``results/rq2/rq2_hypothesis_tests.csv`` and support
 the nine hypotheses tested in the paper:
 
     H1a/b/c – FATE achieves lower fairness_score than FairSMOTE / Reweighing / DIR.
     H2a/b/c – FATE achieves higher performance_score.
     H3a/b/c – FATE has lower elapsed_seconds (execution time).
 """
+import argparse
+from pathlib import Path
+from typing import Optional
+
 import pandas as pd
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.stats import wilcoxon
 
+import paths
 
-RQ2_RESULTS_CSV = "RQ2_data_analysis/rq2_all_experiments_results.csv"
-SUMMARY_CSV = "RQ2_data_analysis/rq2_summary_results.csv"
+
+RESULTS_NAME = "rq2_all_experiments_results.csv"
+TESTS_NAME = "rq2_hypothesis_tests.csv"
 
 
 HYPOTHESIS_MAP = {
-    ("fairness_score", "FairSMOTE"):  "H1a",
+    ("fairness_score", "FairSMOTE"): "H1a",
     ("fairness_score", "Reweighing"): "H1b",
-    ("fairness_score", "DIR"):        "H1c",
+    ("fairness_score", "DIR"): "H1c",
 
-    ("performance_score", "FairSMOTE"):  "H2a",
+    ("performance_score", "FairSMOTE"): "H2a",
     ("performance_score", "Reweighing"): "H2b",
-    ("performance_score", "DIR"):        "H2c",
+    ("performance_score", "DIR"): "H2c",
 
-    ("elapsed_seconds", "FairSMOTE"):  "H3a",
+    ("elapsed_seconds", "FairSMOTE"): "H3a",
     ("elapsed_seconds", "Reweighing"): "H3b",
-    ("elapsed_seconds", "DIR"):        "H3c",
+    ("elapsed_seconds", "DIR"): "H3c",
 }
 
 METRIC_DIRECTION = {
-    "fairness_score":    "lower",   # lower deviation = fairer
-    "elapsed_seconds":   "lower",   # faster is better
-    "execution_time":    "lower",   # in case you used this name
+    "fairness_score": "lower",  # lower deviation = fairer
+    "elapsed_seconds": "lower",  # faster is better
+    "execution_time": "lower",  # in case you used this name
     "performance_score": "higher",  # higher PR-AUC is better
 }
 
 
-def vargha_delaney_a12(x, y):
+def vargha_delaney_a12(x: ArrayLike, y: ArrayLike) -> float:
     """
     Compute the Vargha–Delaney A₁₂ effect size.
 
@@ -92,7 +99,8 @@ def vargha_delaney_a12(x, y):
     return a12
 
 
-def compare_method(df, metric, baseline_label, results_list=None):
+def compare_method(df: pd.DataFrame, metric: str, baseline_label: str,
+                   results_list: Optional[list[dict[str, object]]] = None) -> None:
     """
     Compare FATE against one baseline on one metric using Wilcoxon and A₁₂.
 
@@ -218,15 +226,20 @@ def compare_method(df, metric, baseline_label, results_list=None):
         results_list.append(row)
 
 
-def main():
+def main(argv: Optional[list[str]] = None) -> None:
     """
     Run all nine Wilcoxon tests and save a summary CSV of hypothesis test results.
 
     Iterates over all (metric × baseline) combinations, calls
     ``compare_method`` for each, and writes the collected rows to
-    ``RQ2_data_analysis/rq2_hypothesis_tests.csv``.
+    ``results/rq2/rq2_hypothesis_tests.csv``.
     """
-    df = pd.read_csv(RQ2_RESULTS_CSV)
+    parser = argparse.ArgumentParser(description="RQ2: hypothesis tests H1a-H3c.")
+    parser.add_argument("--input", type=Path, default=paths.RQ2_RESULTS_DIR / RESULTS_NAME,
+                        help="per-method results (e.g. reference/rq2/%s)" % RESULTS_NAME)
+    parser.add_argument("--out", type=Path, default=paths.RQ2_RESULTS_DIR / TESTS_NAME)
+    args = parser.parse_args(argv)
+    df = pd.read_csv(args.input)
 
     summary_rows = []
     for metric in ["fairness_score", "performance_score", "elapsed_seconds"]:
@@ -234,7 +247,9 @@ def main():
             compare_method(df, metric, baseline, results_list=summary_rows)
 
     summary_df = pd.DataFrame(summary_rows)
-    summary_df.to_csv("RQ2_data_analysis/rq2_hypothesis_tests.csv", index=False)
+    paths.ensure_dir(args.out.parent)
+    summary_df.to_csv(args.out, index=False)
+    print(f"Hypothesis tests saved to {args.out}")
 
 
 if __name__ == "__main__":

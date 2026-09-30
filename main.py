@@ -1,27 +1,35 @@
 """
-FATE experiment orchestrator: parameter-grid runner and result aggregator.
+FATE experiment orchestrator (Stage 1 of the replication pipeline).
 
-This module is the top-level entry point for FATE experiments.  Its
-``__main__`` block runs the full parameter-grid search described in the paper
-across three datasets (Adult, German Credit, Heart Disease), four classifiers
-(LR, RF, SVC, XGB), two protected attributes per dataset, six population
-sizes, six generation counts, and five crossover/mutation rate values —
-totalling up to 108 000 GA evaluations across the grid.
+Runs the FATE genetic algorithm over the parameter grid of the paper (Table 2):
+three datasets (Adult, German Credit, Heart Disease), two protected attributes
+per dataset, four classifiers (LR, RF, SVC, XGB), six population sizes, six
+generation counts, and five crossover and five mutation rates.
 
-Execution is parallelised with ``concurrent.futures.ThreadPoolExecutor``
-(default ``max_workers=64``).  Results are appended incrementally to
-``FATE_output/experiments_results.csv`` by the parent thread after each future
-completes, so partial results are preserved on interruption.
+Usage (from the repository root)::
 
-To avoid BLAS / OpenMP oversubscription in multi-threaded operation, all
-thread-count environment variables (``OMP_NUM_THREADS``, ``MKL_NUM_THREADS``,
-``OPENBLAS_NUM_THREADS``, ``VECLIB_MAXIMUM_THREADS``, ``NUMEXPR_NUM_THREADS``)
-are forced to ``1`` both at module import and inside each worker function.
+    python main.py                                   # full paper grid
+    python main.py --datasets adult --models lr      # restricted grid
+    python main.py --datasets adult --models lr --protected sex \
+                   --pop 5 --gen 5 --alpha 0.5 --beta 0.5   # one GA run
+
+Output (see ``paths.py``):
+
+    results/fate/experiments_results.csv   one row per successful GA run
+    results/fate/errors.log                one entry per failed run (only if any)
+    results/fate/runtime_cache.csv         fitness cache written during the run
+
+Execution is parallelised with ``concurrent.futures.ThreadPoolExecutor``.
+Results are appended by the parent thread as soon as each task completes, so
+partial results survive an interruption.  To avoid BLAS / OpenMP
+oversubscription, the thread-count environment variables are set to ``1``
+before the numerical libraries are imported.
 
 Public API:
-    ``get_user_input`` – interactive stdin prompt for single-dataset exploration.
-    ``execute_fate``   – run the GA for one (dataset, protected_attribute,
-                         model-list) combination and return structured result rows.
+    ``execute_fate`` – run the GA for one (dataset, protected attribute,
+                       model list, GA parameters) combination.
+    ``run_grid``     – run a list of such combinations in parallel.
+    ``main``         – command-line entry point.
 """
 import os
 
@@ -32,81 +40,44 @@ os.environ.setdefault('MKL_NUM_THREADS', '1')
 os.environ.setdefault('VECLIB_MAXIMUM_THREADS', '1')
 os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
 
+import argparse  # noqa: E402
 import logging  # noqa: E402
-import pandas as pd  # noqa: E402
-from genetic_algorithm import genetic_algorithm  # noqa: E402
+import sys  # noqa: E402
 import time  # noqa: E402
 import traceback  # noqa: E402
 from concurrent.futures import ThreadPoolExecutor, as_completed  # noqa: E402
+from typing import Optional, Union  # noqa: E402
+
+import pandas as pd  # noqa: E402
+
+import paths  # noqa: E402
+import preprocessing  # noqa: E402
+from experiment_config import (  # noqa: E402
+    DATASETS, DATASETS_BY_NAME, GENERATION_COUNTS, MODELS, POPULATION_SIZES, RATES,
+    RESULT_COLUMNS, DatasetConfig,
+)
+from genetic_algorithm import ScoredIndividual, genetic_algorithm  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-import sys  # noqa: E402
 if sys.version_info[:2] != (3, 10):
     raise SystemError(
         f"Python 3.10 is required for replication. "
         f"Detected: Python {sys.version_info[0]}.{sys.version_info[1]}."
     )
 
-
-def get_user_input():
-    """
-    Interactively collect experiment parameters from the user via stdin.
-
-    Prompts for dataset path, protected attribute, target column, sample
-    fraction, output directory, and model identifier.  Validates that the
-    protected attribute and target column exist in the loaded CSV.
-
-    Returns
-    -------
-    tuple
-        ``(dataset, protected_attribute, target_column, output_dir,
-        sample_fraction, model_identifier)``
-        All elements are ``None`` if any validation step fails.
-    """
-    # Get dataset path and load the dataset
-    dataset_path = input("Enter the dataset path (e.g., 'Dataset/dataset.csv'): ").strip()
-    try:
-        dataset = pd.read_csv(dataset_path)
-        print("Loaded dataset with columns:", dataset.columns.tolist())
-    except FileNotFoundError:
-        print(f"The file {dataset_path} was not found. Please ensure the path is correct.")
-        return None, None, None, None, None, None
-
-    # Get protected attribute and target variable
-    protected_attribute = input(
-        "Enter the name of the protected attribute (e.g., 'Sex_Code_Text'): "
-    ).strip()
-    if protected_attribute not in dataset.columns:
-        print(f"The protected attribute '{protected_attribute}' is not present in the dataset.")
-        return None, None, None, None, None, None
-
-    target_column = input(
-        "Enter the name of the target variable (e.g., 'DecileScore'): "
-    ).strip()
-    if target_column not in dataset.columns:
-        print(f"The target variable '{target_column}' is not present in the dataset.")
-        return None, None, None, None, None, None
-
-    # Get sample fraction and output directory for saving the optimized dataset
-    sample_fraction = float(input(
-        "Enter the fraction of the dataset to use (e.g., 0.1 for 10%): "
-    ).strip())
-    output_dir = input(
-        "Enter the output directory to save the optimized dataset (e.g., 'Output/'): "
-    ).strip()
-
-    # Choose a model identifier to evaluate during GA (no model file loading)
-    model_identifier = input(
-        "Enter model identifier to evaluate (default 'random_forest'): "
-    ).strip() or 'random_forest'
-
-    return (dataset, protected_attribute, target_column, output_dir,
-            sample_fraction, model_identifier)
+#: One grid point: (dataset config, protected attribute, population size,
+#: generations, crossover rate alpha, mutation rate beta).
+Task = tuple[DatasetConfig, str, int, int, float, float]
+#: Fields of a (possibly incomplete) best individual, see ``_unpack_best_individual``.
+UnpackedIndividual = tuple[Optional[list[str]], str, Optional[float], Optional[float],
+                           Optional[float]]
+#: One result or error row (schema: ``experiment_config.RESULT_COLUMNS`` + ``error``).
+ResultRow = dict[str, object]
 
 
-def _write_error_log(errors_path, ds_cfg, prot, pop, gen, alpha, beta,
-                     message, tb_str=None):
+def _write_error_log(errors_path: str, ds_cfg: DatasetConfig, prot: str, pop: int, gen: int,
+                     alpha: float, beta: float, message: str, tb_str: Optional[str] = None) -> None:
     """
     Append a structured error entry to the errors log file.
 
@@ -146,7 +117,8 @@ def _write_error_log(errors_path, ds_cfg, prot, pop, gen, alpha, beta,
         f.write('\n')
 
 
-def _build_ga_params(population_size, generations, alpha, beta):
+def _build_ga_params(population_size: int, generations: int, alpha: float, beta: float
+                     ) -> dict[str, Union[int, float]]:
     """
     Bundle GA hyperparameters into a shared dict used by both result-row builders.
 
@@ -166,7 +138,8 @@ def _build_ga_params(population_size, generations, alpha, beta):
             'alpha': alpha, 'beta': beta}
 
 
-def _unpack_best_individual(best, model_id):
+def _unpack_best_individual(best: Optional[ScoredIndividual], model_id: str
+                            ) -> UnpackedIndividual:
     """
     Unpack a GA best-individual tuple into its five named fields.
 
@@ -197,13 +170,15 @@ def _unpack_best_individual(best, model_id):
     )
 
 
-def _build_result_row(ds_path, model_id, protected_attribute, ga_params, best, elapsed):
+def _build_result_row(ds_path: str, model_id: str, protected_attribute: str,
+                      ga_params: dict[str, Union[int, float]], best: Optional[ScoredIndividual],
+                      elapsed: float) -> ResultRow:
     """
     Build a structured result dict from a successful GA run.
 
     Role in Algorithm 1 output: packages the best individual returned by
     ``genetic_algorithm`` into the CSV schema expected by
-    ``FATE_output/experiments_results.csv``.
+    ``results/fate/experiments_results.csv``.
 
     Parameters
     ----------
@@ -235,7 +210,9 @@ def _build_result_row(ds_path, model_id, protected_attribute, ga_params, best, e
     }
 
 
-def _build_error_row(ds_path, model_id, protected_attribute, ga_params, elapsed, error_msg):
+def _build_error_row(ds_path: str, model_id: str, protected_attribute: str,
+                     ga_params: dict[str, Union[int, float]], elapsed: float, error_msg: str
+                     ) -> ResultRow:
     """
     Build a structured error dict when a GA run raises an exception.
 
@@ -265,7 +242,7 @@ def _build_error_row(ds_path, model_id, protected_attribute, ga_params, elapsed,
     }
 
 
-def _append_row_to_csv(summary_path, row):
+def _append_row_to_csv(summary_path: Optional[str], row: ResultRow) -> None:
     """
     Append one result row to the summary CSV if a path is provided.
 
@@ -280,8 +257,9 @@ def _append_row_to_csv(summary_path, row):
         pd.DataFrame([row]).to_csv(summary_path, mode='a', header=False, index=False)
 
 
-def _run_timed_fate(sample_ready, protected_attribute, target, model_id,
-                    population_size, generations, alpha, beta, reset_cache=False):
+def _run_timed_fate(sample_ready: pd.DataFrame, protected_attribute: str, target: str,
+                    model_id: str, population_size: int, generations: int, alpha: float,
+                    beta: float, reset_cache: bool = False) -> tuple[ScoredIndividual, float]:
     """
     Execute one FATE GA run for a single classifier and return the result with timing.
 
@@ -318,9 +296,10 @@ def _run_timed_fate(sample_ready, protected_attribute, target, model_id,
     return best, time.time() - start
 
 
-def execute_fate(sample_ready, ds_name, ds_path, protected_attribute, target, models,
-                 population_size, generations, alpha=0.5, beta=0.5, summary_path=None,
-                 reset_cache=False):
+def execute_fate(sample_ready: pd.DataFrame, ds_name: str, ds_path: str, protected_attribute: str,
+                 target: str, models: list[str], population_size: int, generations: int,
+                 alpha: float = 0.5, beta: float = 0.5, summary_path: Optional[str] = None,
+                 reset_cache: bool = False) -> list[ResultRow]:
     """
     Run the FATE genetic algorithm for one dataset / protected-attribute combination
     across multiple classifiers.
@@ -358,9 +337,9 @@ def execute_fate(sample_ready, ds_name, ds_path, protected_attribute, target, mo
         parent process handles writing).
     reset_cache : bool, optional
         Forwarded to ``genetic_algorithm``.  When False (default), fitness
-        evaluations are looked up in the read-only root ``experiments_cache.csv``
+        evaluations are looked up in the read-only ``reference/fate/fitness_cache.csv``
         before running the classifier.  When True, only the runtime cache
-        ``FATE_output/runtime_cache.csv`` is used.
+        ``results/fate/runtime_cache.csv`` is used.
 
     Returns
     -------
@@ -396,194 +375,251 @@ def execute_fate(sample_ready, ds_name, ds_path, protected_attribute, target, mo
     return results
 
 
-if __name__ == "__main__":
-    # Simplified automated runner for the 3 datasets (adult, german, heart)
-    datasets = [
-        {
-            'name': 'adult',
-            'path': 'datasets/adult.csv',
-            'preparer_name': 'prepare_adult',
-            'protected_attributes': ['race', 'sex'],
-            'target': 'salary'
-        },
-        {
-            'name': 'german',
-            'path': 'datasets/german.csv',
-            'preparer_name': 'prepare_german',
-            'protected_attributes': ['sex', 'age'],
-            'target': 'Target'
-        },
-        {
-            'name': 'heart',
-            'path': 'datasets/heart.csv',
-            'preparer_name': 'prepare_heart',
-            'protected_attributes': ['sex', 'age'],
-            'target': 'num'
-        }
+# ---------------------------------------------------------------------------
+# Grid execution
+# ---------------------------------------------------------------------------
+
+def load_task_sample(ds_cfg: DatasetConfig, prot: str) -> pd.DataFrame:
+    """
+    Load a dataset and prepare it for FATE with respect to one protected attribute.
+
+    Applies the dataset-specific preparer from ``preprocessing`` followed by
+    ``preprocessing.prepare_data_model``.
+
+    Parameters
+    ----------
+    ds_cfg : DatasetConfig
+        Entry of ``experiment_config.DATASETS``.
+    prot : str
+        Protected attribute to preserve.
+
+    Returns
+    -------
+    pd.DataFrame
+        Model-ready dataset.
+
+    Raises
+    ------
+    ValueError
+        If *prot* is not a column of the prepared dataset.
+    """
+    raw = pd.read_csv(paths.REPO_ROOT / ds_cfg['path'])
+    preparer = getattr(preprocessing, ds_cfg['preparer_name'])
+    processed = preparer(raw)
+    if prot not in processed.columns:
+        raise ValueError(
+            f"Protected attribute '{prot}' not found in dataset "
+            f"'{ds_cfg['name']}' after preparation"
+        )
+    return preprocessing.prepare_data_model(
+        processed, ds_cfg['target'], protected_attribute=prot, binarize=False)
+
+
+def worker_task(task: Task, models: list[str], reset_cache: bool) -> list[ResultRow]:
+    """
+    Thread worker: prepare the dataset of *task* and delegate to ``execute_fate``.
+
+    Called by the ``ThreadPoolExecutor`` in ``run_grid``.  No file I/O is done
+    here (``summary_path=None``); the parent thread writes results and errors.
+
+    Parameters
+    ----------
+    task : Task
+        ``(ds_cfg, prot, pop, gen, alpha, beta)``.
+    models : list of str
+        Classifier identifiers; one GA run is performed per model.
+    reset_cache : bool
+        Forwarded to ``execute_fate``.
+
+    Returns
+    -------
+    list of dict
+        Result rows (same schema as ``execute_fate``), one per model.
+    """
+    ds_cfg, prot, pop, gen, alpha, beta = task
+    sample_ready = load_task_sample(ds_cfg, prot)
+    return execute_fate(
+        sample_ready, ds_cfg['name'], ds_cfg['path'], prot, ds_cfg['target'], models,
+        population_size=pop, generations=gen, alpha=alpha, beta=beta, summary_path=None,
+        reset_cache=reset_cache)
+
+
+def build_tasks(datasets: list[DatasetConfig], protected: Optional[list[str]],
+                population_sizes: list[int], generation_counts: list[int],
+                alphas: list[float], betas: list[float]) -> list[Task]:
+    """
+    Enumerate the grid points (Cartesian product of the given values).
+
+    Parameters
+    ----------
+    datasets : list of DatasetConfig
+    protected : list of str or None
+        Protected attributes to keep; ``None`` keeps every attribute listed in
+        each dataset configuration.
+    population_sizes, generation_counts : list of int
+    alphas, betas : list of float
+
+    Returns
+    -------
+    list of Task
+    """
+    return [
+        (ds, prot, pop, gen, alpha, beta)
+        for ds in datasets
+        for prot in ds['protected_attributes']
+        if protected is None or prot in protected
+        for pop in population_sizes
+        for gen in generation_counts
+        for alpha in alphas
+        for beta in betas
     ]
 
-    models = ['rf', 'lr', 'svc', 'xgb']
 
-    logging.basicConfig(
-        format='%(asctime)s %(levelname)-7s %(message)s',
-        datefmt='%H:%M:%S',
-        level=logging.INFO,
-    )
-
-    # results file (progressive append) — success rows only
-    summary_path = os.path.join('FATE_output', 'experiments_results.csv')
-    # errors file — per-model GA failures and worker-level exceptions land here,
-    # never in experiments_results.csv (Bug 2 fix)
-    errors_path = os.path.join('FATE_output', 'errors.log')
+def init_results_csv(summary_path: str) -> None:
+    """Create *summary_path* with the result header if it does not exist yet."""
     os.makedirs(os.path.dirname(summary_path), exist_ok=True)
     if not os.path.exists(summary_path):
-        pd.DataFrame(columns=[
-            'dataset', 'model_identifier', 'protected_attribute',
-            'population_size', 'generations',
-            'alpha', 'beta',
-            'techniques', 'model_used', 'fitness',
-            'fairness_score', 'performance_score', 'elapsed_seconds',
-        ]).to_csv(summary_path, index=False)
+        pd.DataFrame(columns=RESULT_COLUMNS).to_csv(summary_path, index=False)
 
-    # False  → use experiments_cache.csv (read-only) as additional lookup source.
-    # True   → skip root cache; only FATE_output/runtime_cache.csv is consulted.
-    reset_cache = False
 
-    sample_fraction = 1
-    overall_start = time.time()
+def record_task_rows(rows: list[ResultRow], task: Task, summary_path: str,
+                     errors_path: str) -> tuple[int, int]:
+    """
+    Write the rows of one completed task: successes to the CSV, failures to the log.
 
-    # parameter grid
-    population_sizes = [5, 10, 15, 20, 50, 100]
-    generations_list = [5, 10, 15, 20, 50, 100]
-    rates = [0, 0.25, 0.50, 0.75, 1]  # crossover and mutation rates
+    Parameters
+    ----------
+    rows : list of dict
+        Rows returned by ``worker_task``.
+    task : Task
+        Grid point that produced *rows* (used for the error log).
+    summary_path : str
+        Results CSV.
+    errors_path : str
+        Errors log.
 
-    # helper worker that runs the GA for one parameter combination and returns rows (no file IO)
-    def worker_task(ds_cfg, prot, pop, gen, alpha, beta):
-        """
-        Thread-worker: load the dataset, prepare it, and delegate to ``execute_fate``.
+    Returns
+    -------
+    tuple of int
+        ``(n_success, n_error)``.
+    """
+    ds_cfg, prot, pop, gen, alpha, beta = task
+    success_rows = [r for r in rows if r.get('error') is None]
+    error_rows = [r for r in rows if r.get('error') is not None]
+    if success_rows:
+        # drop the 'error' column before writing: it is always None here
+        pd.DataFrame(success_rows).drop(columns=['error'], errors='ignore').to_csv(
+            summary_path, mode='a', header=False, index=False)
+    for r in error_rows:
+        _write_error_log(errors_path, ds_cfg, prot, pop, gen, alpha, beta,
+                         f"model={r['model_identifier']}: {r['error']}")
+    return len(success_rows), len(error_rows)
 
-        Called by the ``ThreadPoolExecutor``.  Loads the raw CSV, applies the
-        dataset-specific preparer from ``preprocessing``, constructs the
-        model-ready sample, and calls ``execute_fate`` without file I/O
-        (``summary_path=None``).  The parent thread aggregates and writes CSV.
 
-        Parameters
-        ----------
-        ds_cfg : dict
-            Dataset configuration with keys: ``name``, ``path``,
-            ``preparer_name``, ``protected_attributes``, ``target``.
-        prot : str
-            Protected attribute to evaluate for this task.
-        pop : int
-            Population size for this parameter-grid point.
-        gen : int
-            Generation count for this parameter-grid point.
-        alpha : float
-            Crossover probability.
-        beta : float
-            Mutation probability.
+def print_single_result(rows: list[ResultRow], elapsed: float) -> None:
+    """Print a readable summary of a single GA run (used by the fast mode)."""
+    print("=" * 60)
+    print("  FATE result")
+    print("=" * 60)
+    for r in rows:
+        if r.get('error') is not None:
+            print(f"  FAILED ({r['model_identifier']}): {r['error']}")
+            continue
+        print(f"  Best pipeline : {r['techniques']}")
+        print(f"  Model         : {r['model_used']}")
+        print(f"  Fitness       : {r['fitness']:.4f}")
+        print(f"  Performance   : {r['performance_score']:.4f}  (mean PR-AUC across 5 CV folds)")
+        print(f"  Fairness      : {r['fairness_score']:.4f}  (mean (|SPD|+|EOD|+|DI|) / 3)")
+    print(f"  Elapsed       : {elapsed:.1f} s")
+    print("=" * 60)
 
-        Returns
-        -------
-        list of dict
-            Result rows (same schema as ``execute_fate``), one per model.
-            Returns error rows for all models if dataset preparation or GA
-            execution raises an exception.
-        """
-        # ensure worker limits BLAS/OMP threads before importing heavy libs
-        import os as _os
-        _os.environ.setdefault('OMP_NUM_THREADS', '1')
-        _os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
-        _os.environ.setdefault('MKL_NUM_THREADS', '1')
-        _os.environ.setdefault('VECLIB_MAXIMUM_THREADS', '1')
-        _os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
 
-        # run inside worker process: load, prepare, sample, prepare for model, call execute_fate
-        import pandas as _pd
-        from preprocessing import prepare_data_model as _prepare_data_model
-        import preprocessing as _preproc
+def run_grid(tasks: list[Task], models: list[str], max_workers: int, reset_cache: bool,
+             summary_path: str, errors_path: str) -> tuple[int, int]:
+    """
+    Run all *tasks* in parallel, writing results progressively.
 
-        # load and prepare dataset
-        raw = _pd.read_csv(ds_cfg['path'])
-        preparer = getattr(_preproc, ds_cfg['preparer_name'])
-        processed = preparer(raw)
-        sample = processed
+    Parameters
+    ----------
+    tasks : list of Task
+    models : list of str
+    max_workers : int
+        Number of worker threads.
+    reset_cache : bool
+        Forwarded to every GA run.
+    summary_path : str
+    errors_path : str
 
-        if prot not in sample.columns:
-            # Raise so the parent as_completed handler logs this to errors.log
-            # rather than writing a synthetic error row into the results CSV.
-            raise ValueError(
-                f"Protected attribute '{prot}' not found in dataset "
-                f"'{ds_cfg['name']}' after preparation"
-            )
-
-        sample_ready = _prepare_data_model(
-            sample, ds_cfg['target'], protected_attribute=prot, binarize=False)
-
-        rows = execute_fate(
-            sample_ready, ds_cfg['name'], ds_cfg['path'], prot, ds_cfg['target'], models,
-            population_size=pop, generations=gen, alpha=alpha, beta=beta, summary_path=None,
-            reset_cache=reset_cache)
-        return rows
-
-    # set environment to avoid BLAS/OMP oversubscription
-    os.environ.setdefault('OMP_NUM_THREADS', '1')
-    os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
-    os.environ.setdefault('MKL_NUM_THREADS', '1')
-    os.environ.setdefault('VECLIB_MAXIMUM_THREADS', '1')
-    os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
-
-    # choose how many threads to run in parallel
-    max_workers = 64
-
-    # build list of tasks (ds_cfg, prot, pop, gen, alpha, beta)
-    tasks = []
-    for ds in datasets:
-        for prot in ds['protected_attributes']:
-            for pop in population_sizes:
-                for gen in generations_list:
-                    for alpha in rates:
-                        for beta in rates:
-                            tasks.append((ds, prot, pop, gen, alpha, beta))
-
-    logger.info("Starting parallel run  |  workers=%d  |  tasks=%d", max_workers, len(tasks))
-
-    # submit tasks and write results progressively in the parent process
+    Returns
+    -------
+    tuple of int
+        ``(n_success, n_error)`` summed over all tasks.
+    """
+    init_results_csv(summary_path)
+    total = len(tasks)
+    width = len(str(total))
+    n_ok = n_err = 0
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_task = {executor.submit(worker_task, *t): t for t in tasks}
-        for fut in as_completed(future_to_task):
-            ds_cfg, prot, pop, gen, alpha, beta = future_to_task[fut]
+        future_to_task = {executor.submit(worker_task, t, models, reset_cache): t
+                          for t in tasks}
+        for done, fut in enumerate(as_completed(future_to_task), start=1):
+            task = future_to_task[fut]
+            ds_cfg, prot, pop, gen, alpha, beta = task
             try:
                 rows = fut.result()
-                # Bug 2 fix: separate success rows from per-model error rows.
-                # Only success rows go into experiments_results.csv; failures
-                # are written to errors.log so the CSV stays clean.
-                success_rows = [r for r in rows if r.get('error') is None]
-                error_rows = [r for r in rows if r.get('error') is not None]
-
-                if success_rows:
-                    # drop the 'error' column before writing — it is always None here
-                    _df = pd.DataFrame(success_rows).drop(columns=['error'], errors='ignore')
-                    _df.to_csv(summary_path, mode='a', header=False, index=False)
-                    for r in success_rows:
-                        logger.info("Saved  %s/%s/%s  pop=%d gen=%d  α=%.2f β=%.2f",
-                                    ds_cfg['name'], prot, r['model_identifier'],
-                                    pop, gen, alpha, beta)
-
-                for r in error_rows:
-                    _write_error_log(errors_path, ds_cfg, prot, pop, gen, alpha, beta,
-                                     f"model={r['model_identifier']}: {r['error']}")
-                    logger.warning("Model error logged  %s/%s/%s: %s",
-                                   ds_cfg['name'], prot, r['model_identifier'], r['error'])
-
-            except Exception as exc:
-                # Worker-level exception (dataset load, attribute missing, unexpected crash).
-                # Write full traceback to errors.log; do not touch the results CSV.
+            except Exception as exc:  # worker-level failure: log with traceback
                 _write_error_log(errors_path, ds_cfg, prot, pop, gen, alpha, beta,
                                  str(exc), traceback.format_exc())
-                logger.error("Task failed  %s/%s  pop=%d gen=%d: %s",
-                             ds_cfg['name'], prot, pop, gen, exc)
+                n_err += 1
+                print(f"[{done:{width}}/{total}] FAILED ds={ds_cfg['name']} prot={prot} "
+                      f"pop={pop} gen={gen}: {exc}", flush=True)
+                continue
+            ok, err = record_task_rows(rows, task, summary_path, errors_path)
+            n_ok += ok
+            n_err += err
+            print(f"[{done:{width}}/{total}] ds={ds_cfg['name']} prot={prot} pop={pop} "
+                  f"gen={gen} a={alpha} b={beta}  ok={ok} err={err}", flush=True)
+            if total == 1:
+                print_single_result(rows, float(rows[0]['elapsed_seconds']))
+    return n_ok, n_err
 
-    overall_elapsed = time.time() - overall_start
-    logger.info("All experiments done  |  results → %s  |  elapsed %.1fs",
-                summary_path, overall_elapsed)
+
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    """Parse the command line; every option defaults to the full paper grid."""
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument('--datasets', nargs='+', choices=list(DATASETS_BY_NAME),
+                        default=list(DATASETS_BY_NAME))
+    parser.add_argument('--protected', nargs='+', default=None,
+                        help='protected attributes to keep (default: all per dataset)')
+    parser.add_argument('--models', nargs='+', choices=MODELS, default=MODELS)
+    parser.add_argument('--pop', nargs='+', type=int, default=POPULATION_SIZES)
+    parser.add_argument('--gen', nargs='+', type=int, default=GENERATION_COUNTS)
+    parser.add_argument('--alpha', nargs='+', type=float, default=RATES)
+    parser.add_argument('--beta', nargs='+', type=float, default=RATES)
+    parser.add_argument('--workers', type=int, default=64)
+    parser.add_argument('--reset-cache', action='store_true',
+                        help='ignore the archived fitness cache in reference/fate/')
+    return parser.parse_args(argv)
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    """Command-line entry point: run the requested (sub)grid of FATE experiments."""
+    args = parse_args(argv)
+    logging.basicConfig(format='%(asctime)s %(levelname)-7s %(message)s',
+                        datefmt='%H:%M:%S', level=logging.WARNING)
+    datasets = [ds for ds in DATASETS if ds['name'] in args.datasets]
+    tasks = build_tasks(datasets, args.protected, args.pop, args.gen, args.alpha, args.beta)
+    summary_path = str(paths.FATE_RESULTS_CSV)
+    errors_path = str(paths.FATE_ERRORS_LOG)
+    print(f"Tasks       : {len(tasks)}  (x {len(args.models)} models)")
+    print(f"Results CSV : {summary_path}")
+    print(f"Errors log  : {errors_path}", flush=True)
+    start = time.time()
+    n_ok, n_err = run_grid(tasks, args.models, args.workers, args.reset_cache,
+                           summary_path, errors_path)
+    print(f"Complete. GA runs ok={n_ok} failed={n_err}. "
+          f"Elapsed: {time.time() - start:.0f} s")
+
+
+if __name__ == "__main__":
+    main()

@@ -35,7 +35,7 @@ import numpy as np
 # Function to apply OneHot encoding and standard scaling
 
 
-def apply_standard_transformation(data, protected_attribute):
+def apply_standard_transformation(data: pd.DataFrame, protected_attribute: str) -> pd.DataFrame:
     """
     Apply StandardScaler to numeric features while preserving the protected attribute.
 
@@ -81,7 +81,7 @@ def apply_standard_transformation(data, protected_attribute):
 
 
 # Function for stratified sampling to balance the dataset
-def apply_stratified_sampling(data, protected_attribute):
+def apply_stratified_sampling(data: pd.DataFrame, protected_attribute: str) -> pd.DataFrame:
     """
     Balance the dataset by under-sampling all protected-attribute groups to the smallest
     group size.
@@ -134,7 +134,7 @@ def apply_stratified_sampling(data, protected_attribute):
 
 
 # Function for oversampling to ensure equal representation
-def apply_oversampling(data, protected_attribute):
+def apply_oversampling(data: pd.DataFrame, protected_attribute: str) -> pd.DataFrame:
     """
     Oversample minority groups of the protected attribute to match the majority group size.
 
@@ -171,7 +171,7 @@ def apply_oversampling(data, protected_attribute):
 
 
 # Function for undersampling to ensure equal representation
-def apply_undersampling(data, protected_attribute):
+def apply_undersampling(data: pd.DataFrame, protected_attribute: str) -> pd.DataFrame:
     """
     Undersample majority groups of the protected attribute to match the minority group size.
 
@@ -207,7 +207,8 @@ def apply_undersampling(data, protected_attribute):
 
 
 # Function for applying KMeans clustering
-def apply_clustering(data, protected_attribute, n_clusters=2):
+def apply_clustering(data: pd.DataFrame, protected_attribute: str, n_clusters: int = 2
+                     ) -> pd.DataFrame:
     """
     Append KMeans cluster membership as a new feature column named ``Cluster``.
 
@@ -235,11 +236,11 @@ def apply_clustering(data, protected_attribute, n_clusters=2):
     """
     # Select numeric columns for clustering
     numerical_columns = data.select_dtypes(include=[np.number]).columns
-    X = data[numerical_columns]
+    x = data[numerical_columns]
     # Initialize KMeans with the specified number of clusters
     kmeans = KMeans(n_clusters=n_clusters, random_state=42)
     # Fit KMeans and get the cluster labels
-    cluster_labels = kmeans.fit_predict(X)
+    cluster_labels = kmeans.fit_predict(x)
     # Create a copy of the data and add the cluster labels
     clustered_data = data.copy()
     clustered_data['Cluster'] = cluster_labels
@@ -247,7 +248,7 @@ def apply_clustering(data, protected_attribute, n_clusters=2):
 
 
 # Function for applying Inverse Probability Weighting (IPW)
-def apply_ipw(data, protected_attribute):
+def apply_ipw(data: pd.DataFrame, protected_attribute: str) -> pd.DataFrame:
     """
     Weight each instance by the inverse of its protected-attribute group probability.
 
@@ -281,7 +282,7 @@ def apply_ipw(data, protected_attribute):
 
 
 # Function for creating a matched sample
-def apply_matching(data, protected_attribute):
+def apply_matching(data: pd.DataFrame, protected_attribute: str) -> pd.DataFrame:
     """
     Apply a random shuffle as a simplified matching step.
 
@@ -308,7 +309,7 @@ def apply_matching(data, protected_attribute):
 
 
 # Function for applying Min-Max scaling
-def apply_min_max_scaling(data, protected_attribute):
+def apply_min_max_scaling(data: pd.DataFrame, protected_attribute: str) -> pd.DataFrame:
     """
     Scale all numeric columns to the [0, 1] range using Min-Max normalisation.
 
@@ -351,7 +352,7 @@ _TECHNIQUE_DISPATCH = {
 
 
 # Function to apply a specified preprocessing technique
-def apply_techniques(data, technique, protected_attribute):
+def apply_techniques(data: pd.DataFrame, technique: str, protected_attribute: str) -> pd.DataFrame:
     """
     Dispatch a technique identifier to the corresponding preprocessing function.
 

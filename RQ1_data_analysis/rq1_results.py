@@ -1,38 +1,40 @@
 """
 RQ1 comparative analysis: FATE vs static baselines (all-practices, no-practices).
 
-This script has two responsibilities:
+This script has two steps, both run by ``main()``:
 
-1. **``compute_baselines()``** (called on demand by uncommenting in ``__main__``):
-   Evaluates two baseline configurations — applying *all* eight fairness
-   techniques simultaneously and applying *none* — using the same
-   ``fitness.fitness`` function as the GA.  Saves results to
-   ``RQ1_data_analysis/rq1_baseline_results.csv``.
-
-2. **Main block** (default execution):
-   Merges the best FATE results (``rq1_fate_results_best_per_group.csv``)
-   with the pre-computed baseline results, computes fitness deltas
-   (``FATE_fitness − baseline_fitness``), and writes the comparison table to
-   ``RQ1_data_analysis/rq1_fate_vs_baselines.csv``.
+1. ``compute_baselines``: evaluates the two baseline configurations, applying
+   *all* eight fairness-aware practices and applying *none*, with the same
+   ``fitness.fitness`` function used by the GA.  Output:
+   ``results/rq1/rq1_baselines_results.csv``.
+2. ``compare_with_baselines``: merges the best FATE configurations
+   (``results/rq1/rq1_fate_results_best_per_group.csv``, produced by
+   ``model_dataset_results``) with the baseline results, computes fitness
+   deltas (``FATE_fitness - baseline_fitness``) and writes
+   ``results/rq1/rq1_fate_vs_baselines.csv``.
 
 The comparison answers the core question of RQ1: does FATE find better
 fairness–performance trade-offs than the trivial baselines?
 """
-import sys
+import argparse
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))  # noqa: E402
-from fitness import fitness  # noqa: E402
-import pandas as pd  # noqa: E402
-from preprocessing import prepare_data_model as _prepare_data_model  # noqa: E402
-import preprocessing as _preproc  # noqa: E402
+from pathlib import Path
+from typing import Optional
 
-# ---- paths (adapt if needed) ----
-FATE_CSV = "RQ1_data_analysis/rq1_fate_results_best_per_group.csv"
-BASELINES_CSV = "RQ1_data_analysis/rq1_baselines_results.csv"
-OUT_CSV = "RQ1_data_analysis/rq1_fate_vs_baselines.csv"
+import pandas as pd
+
+import paths
+import preprocessing as _preproc
+from experiment_config import DATASETS, TECHNIQUES
+from fitness import fitness
+from preprocessing import prepare_data_model as _prepare_data_model
+
+BEST_PER_GROUP_NAME = "rq1_fate_results_best_per_group.csv"
+BASELINES_NAME = "rq1_baselines_results.csv"
+OUT_NAME = "rq1_fate_vs_baselines.csv"
 
 
-def compute_baselines():
+def compute_baselines(out_path: Path) -> None:
     """
     Evaluate the two static baselines (all techniques and no techniques) for all groups.
 
@@ -42,45 +44,19 @@ def compute_baselines():
     - ``baseline='all'``: applies all eight fairness techniques simultaneously.
     - ``baseline='none'``: applies no techniques (raw dataset).
 
-    Results are saved to ``RQ1_data_analysis/rq1_baseline_results.csv``.
-
-    Notes
-    -----
-    This function is commented out in the ``__main__`` block by default.  Run
-    it once to generate the baseline CSV, then run the main block to produce
-    the comparison table.
+    Parameters
+    ----------
+    out_path : Path
+        Destination CSV (by default ``results/rq1/rq1_baselines_results.csv``).
     """
-    datasets = [
-        {
-            'name': 'adult',
-            'path': 'datasets/adult.csv',
-            'preparer_name': 'prepare_adult',
-            'protected_attributes': ['race', 'sex'],
-            'target': 'salary'
-        },
-        {
-            'name': 'german',
-            'path': 'datasets/german.csv',
-            'preparer_name': 'prepare_german',
-            'protected_attributes': ['sex', 'age'],
-            'target': 'Target'
-        },
-        {
-            'name': 'heart',
-            'path': 'datasets/heart.csv',
-            'preparer_name': 'prepare_heart',
-            'protected_attributes': ['sex', 'age'],
-            'target': 'num'
-        }
-    ]
+    datasets = DATASETS
     models = ["lr", "rf", "svc", "xgb"]
-    techniques = ['standard', 'stratified_sampling', 'oversampling', 'undersampling',
-                  'clustering', 'ipw', 'matching', 'min_max_scaling']
+    techniques = list(TECHNIQUES)
 
     results = []  # <- MUST BE A LIST, not a dict
 
     for ds_cfg in datasets:
-        raw = pd.read_csv(ds_cfg['path'])
+        raw = pd.read_csv(paths.REPO_ROOT / ds_cfg['path'])
         preparer = getattr(_preproc, ds_cfg['preparer_name'])
         processed = preparer(raw)
 
@@ -121,35 +97,46 @@ def compute_baselines():
 
     # --- Save all results to CSV ---
     results_df = pd.DataFrame(results)
-    out_path = "RQ1_data_analysis/rq1_baseline_results.csv"
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    paths.ensure_dir(out_path.parent)
     results_df.to_csv(out_path, index=False)
     print(f"Results saved to {out_path}")
 
 
-if __name__ == "__main__":
-    # compute_baselines()
+def normalize_dataset_path(p: object) -> str:
+    """Normalise a dataset path to its name, e.g. ``datasets/adult.csv`` -> ``adult``."""
+    base = os.path.basename(str(p))
+    name, _ = os.path.splitext(base)
+    return name
+
+
+def compare_with_baselines(best_csv: Path, baselines_csv: Path, out_csv: Path) -> None:
+    """
+    Merge the best FATE configurations with the two baselines and compute deltas.
+
+    Parameters
+    ----------
+    best_csv : Path
+        Best configuration per group (output of ``model_dataset_results``).
+    baselines_csv : Path
+        Output of ``compute_baselines``.
+    out_csv : Path
+        Destination of the comparison table (``rq1_fate_vs_baselines.csv``).
+    """
     # --------------------------
     # Load FATE results
     # --------------------------
-    fate = pd.read_csv(FATE_CSV)
+    fate = pd.read_csv(best_csv)
 
     # Drop errored rows if any
     if "error" in fate.columns:
         fate = fate[fate["error"].isna()]
-
-    # Normalize dataset name: datasets/adult.csv -> adult
-    def normalize_dataset_path(p):
-        base = os.path.basename(str(p))
-        name, _ = os.path.splitext(base)
-        return name
 
     fate["dataset_name"] = fate["dataset"].apply(normalize_dataset_path)
 
     # --------------------------
     # Load baselines
     # --------------------------
-    base = pd.read_csv(BASELINES_CSV)
+    base = pd.read_csv(baselines_csv)
 
     # Normalize model names: svm -> svc to match FATE output
     base["model_norm"] = base["model"].replace({"svm": "svc"})
@@ -248,8 +235,8 @@ if __name__ == "__main__":
     # --------------------------
     # Save to CSV
     # --------------------------
-    merged.to_csv(OUT_CSV, index=False)
-    print(f"Comparison saved to {OUT_CSV}")
+    merged.to_csv(out_csv, index=False)
+    print(f"Comparison saved to {out_csv}")
 
     # --------------------------
     # Quick console summary
@@ -263,3 +250,23 @@ if __name__ == "__main__":
     print(f"FATE better than BOTH baselines (fitness): {both} ({both/total:.1%})")
     print(f"FATE better than ONLY 'all' baseline:      {only_all} ({only_all/total:.1%})")
     print(f"FATE better than ONLY 'none' baseline:     {only_none} ({only_none/total:.1%})")
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    """Compute the two RQ1 baselines and compare them with the best FATE pipelines."""
+    parser = argparse.ArgumentParser(description="RQ1: FATE vs no/all-practice baselines.")
+    parser.add_argument("--rq1-dir", type=Path, default=paths.RQ1_RESULTS_DIR,
+                        help="folder with the best-per-group CSV; outputs are written here")
+    parser.add_argument("--baselines", type=Path, default=None,
+                        help="use an existing baselines CSV instead of recomputing it")
+    args = parser.parse_args(argv)
+    baselines_csv = args.baselines
+    if baselines_csv is None:
+        baselines_csv = args.rq1_dir / BASELINES_NAME
+        compute_baselines(baselines_csv)
+    compare_with_baselines(args.rq1_dir / BEST_PER_GROUP_NAME, baselines_csv,
+                           args.rq1_dir / OUT_NAME)
+
+
+if __name__ == "__main__":
+    main()

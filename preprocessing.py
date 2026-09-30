@@ -21,12 +21,14 @@ Role in Algorithm 1:
     applied to the dataset, it ensures a clean, fully numeric feature matrix
     is ready for classifier training and cross-validation.
 """
+from typing import Iterable, Optional
+
 import pandas as pd
 import numpy as np
 from sklearn.impute import SimpleImputer
 
 
-def load_dataset(path):
+def load_dataset(path: str) -> pd.DataFrame:
     """
     Load a CSV file from disk into a pandas DataFrame.
 
@@ -43,7 +45,7 @@ def load_dataset(path):
     return pd.read_csv(path)
 
 
-def sample_dataset(df, fraction=1.0, random_state=42):
+def sample_dataset(df: pd.DataFrame, fraction: float = 1.0, random_state: int = 42) -> pd.DataFrame:
     """
     Draw a random fractional sample of a DataFrame.
 
@@ -66,7 +68,7 @@ def sample_dataset(df, fraction=1.0, random_state=42):
     return df.sample(frac=fraction, random_state=random_state).reset_index(drop=True)
 
 
-def minimal_clean(df, target_column):
+def minimal_clean(df: pd.DataFrame, target_column: Optional[str]) -> pd.DataFrame:
     """
     Remove rows with a missing target and drop all-NA columns.
 
@@ -91,7 +93,7 @@ def minimal_clean(df, target_column):
     return df.reset_index(drop=True)
 
 
-def encode_and_impute(df, protected_attribute=None):
+def encode_and_impute(df: pd.DataFrame, protected_attribute: Optional[str] = None) -> pd.DataFrame:
     """
     One-hot-encode categorical columns and median-impute numeric NaNs.
 
@@ -143,7 +145,9 @@ def encode_and_impute(df, protected_attribute=None):
     return new
 
 
-def binarize_target(df, target_column, positive_values=None, threshold=None):
+def binarize_target(df: pd.DataFrame, target_column: str,
+                    positive_values: Optional[Iterable[object]] = None,
+                    threshold: Optional[float] = None) -> pd.DataFrame:
     """
     Map the target column to a binary {0, 1} label.
 
@@ -203,7 +207,9 @@ def binarize_target(df, target_column, positive_values=None, threshold=None):
     return new
 
 
-def prepare_data_model(df, target_column, protected_attribute=None, binarize=True):
+def prepare_data_model(df: pd.DataFrame, target_column: str,
+                       protected_attribute: Optional[str] = None, binarize: bool = True
+                       ) -> pd.DataFrame:
     """
     Minimal end-to-end pipeline to produce a model-ready DataFrame.
 
@@ -250,7 +256,7 @@ def prepare_data_model(df, target_column, protected_attribute=None, binarize=Tru
     return new
 
 
-def prepare_adult(df):
+def prepare_adult(df: pd.DataFrame) -> pd.DataFrame:
     """
     Normalise the raw Adult (Census Income) dataset for FATE experiments.
 
@@ -303,7 +309,37 @@ def prepare_adult(df):
     return new
 
 
-def prepare_german(df):
+def _map_german_sex_code(v: object) -> int:
+    """
+    Map one German Credit personal-status/sex code to the binary ``sex`` value.
+
+    A92/A95 (female) -> 1; A91/A93/A94 (male) -> 0; other strings containing an
+    ``f`` -> 1; everything else -> 0.
+
+    Parameters
+    ----------
+    v : object
+        Raw cell value.
+
+    Returns
+    -------
+    int
+        1 for female, 0 for male.
+    """
+    try:
+        s = str(v)
+        if 'A95' in s or 'A92' in s:
+            return 1
+        if 'A93' in s or 'A91' in s or 'A94' in s:
+            return 0
+        if 'f' in s.lower():
+            return 1
+        return 0
+    except Exception:
+        return 0
+
+
+def prepare_german(df: pd.DataFrame) -> pd.DataFrame:
     """
     Normalise the raw German Credit dataset for FATE experiments.
 
@@ -329,23 +365,9 @@ def prepare_german(df):
         Target column: ``Target`` (binary 0/1, 1=good credit).
     """
     data = df.copy()
-    # Sex mapping
+    # Sex mapping (German dataset uses A91..A95 codes)
     if 'sex' in data.columns:
-        # German dataset uses A91..A95 codes; map female and male
-        def map_sex_code(v):
-            try:
-                s = str(v)
-                if 'A95' in s or 'A92' in s:
-                    return 1
-                if 'A93' in s or 'A91' in s or 'A94' in s:
-                    return 0
-                if 'f' in s.lower():
-                    return 1
-                return 0
-            except Exception:
-                return 0
-
-        data['sex'] = data['sex'].apply(map_sex_code)
+        data['sex'] = data['sex'].apply(_map_german_sex_code)
 
     # Age numeric
     if 'Age' in data.columns:
@@ -361,7 +383,7 @@ def prepare_german(df):
     return new
 
 
-def prepare_heart(df):
+def prepare_heart(df: pd.DataFrame) -> pd.DataFrame:
     """
     Normalise the raw Heart Disease (Cleveland) dataset for FATE experiments.
 

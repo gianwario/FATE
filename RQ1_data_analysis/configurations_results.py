@@ -22,12 +22,18 @@ Output files (written to the working directory):
     ``rq1_fate_by_alpha.csv``
     ``rq1_fate_by_beta.csv``
 """
+import argparse
+from pathlib import Path
+from typing import Optional
+
 import numpy as np
 import pandas as pd
-csv_path = "../output/experiments_results.csv"  # results CSV path
+
+import paths
 
 
-def summarize_group(df, group_cols, prefix):
+def summarize_group(df: pd.DataFrame, group_cols: list[str], prefix: str,
+                    out_dir: Path) -> pd.DataFrame:
     """
     Aggregate GA result metrics over a set of grouping columns and save to CSV.
 
@@ -40,7 +46,10 @@ def summarize_group(df, group_cols, prefix):
     group_cols : list of str
         Column names to group by (e.g., ``['population_size']``).
     prefix : str
-        Base name for the output CSV file; written to ``<prefix>.csv``.
+        Base name for the output CSV file, without extension; written to
+        ``<out_dir>/<prefix>.csv``.
+    out_dir : Path
+        Output folder.
 
     Returns
     -------
@@ -67,25 +76,32 @@ def summarize_group(df, group_cols, prefix):
         )
         .reset_index()
     )
-    output_path = f"{prefix}.csv"
+    output_path = paths.ensure_dir(out_dir) / f"{prefix}.csv"
     agg.to_csv(output_path, index=False)
     print(f"Saved summary: {output_path}")
     return agg
 
 
-def main():
+def main(argv: Optional[list[str]] = None) -> None:
     """
     Load, clean, and summarise the full parameter-grid results for RQ1 sensitivity analysis.
 
     Steps:
 
-    1. Load ``output/experiments_results.csv``.
+    1. Load the FATE grid results (default ``results/fate/experiments_results.csv``;
+       pass ``--results reference/fate/experiments_results.csv`` for the paper's run).
     2. Coerce metric columns to numeric; replace inf / -inf with NaN; drop rows
        with any invalid metric value.
     3. Call ``summarize_group`` for the full parameter grid and for each single
        hyperparameter (population_size, generations, alpha, beta).
     4. Print the top-10 parameter configurations by mean fitness to stdout.
     """
+    parser = argparse.ArgumentParser(description="RQ1: GA parameter sensitivity summaries.")
+    parser.add_argument("--results", type=Path, default=paths.FATE_RESULTS_CSV)
+    parser.add_argument("--out-dir", type=Path, default=paths.RQ1_RESULTS_DIR)
+    args = parser.parse_args(argv)
+    csv_path = args.results
+    out_dir = args.out_dir
     df = pd.read_csv(csv_path)
 
     # Basic sanity check
@@ -136,7 +152,8 @@ def main():
     # ---- 1) Full parameter configuration summary ----
     print("\n[1] Summarizing per full GA parameter configuration...")
     full_group_cols = ["population_size", "generations", "alpha", "beta"]
-    full_summary = summarize_group(df, full_group_cols, "rq1_fate_full_paramgrid_summary.csv")
+    full_summary = summarize_group(df, full_group_cols, "rq1_fate_full_paramgrid_summary",
+                                   out_dir)
 
     # Show a few best configs by mean fitness
     print("\nTop 10 parameter configs by mean fitness:")
@@ -150,16 +167,17 @@ def main():
     print("\n[2] Summarizing per single GA hyperparameter...")
 
     # By population size
-    pop_summary = summarize_group(df, ["population_size"], "rq1_fate_by_population_size.csv")
+    pop_summary = summarize_group(df, ["population_size"], "rq1_fate_by_population_size",
+                                  out_dir)
 
     # By number of generations
-    gen_summary = summarize_group(df, ["generations"], "rq1_fate_by_generations.csv")
+    gen_summary = summarize_group(df, ["generations"], "rq1_fate_by_generations", out_dir)
 
     # By alpha (we treat as crossover rate)
-    alpha_summary = summarize_group(df, ["alpha"], "rq1_fate_by_alpha.csv")
+    alpha_summary = summarize_group(df, ["alpha"], "rq1_fate_by_alpha", out_dir)
 
     # By beta (we treat as mutation rate)
-    beta_summary = summarize_group(df, ["beta"], "rq1_fate_by_beta.csv")
+    beta_summary = summarize_group(df, ["beta"], "rq1_fate_by_beta", out_dir)
 
     # Show short previews
     print("\nPopulation size summary (sorted by fitness_mean):")

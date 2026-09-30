@@ -28,18 +28,24 @@ instantiated inside ``fitness.fitness``.
 import logging
 import random
 import time
+from typing import Iterable, Optional, Union
 
 import numpy as np
-from fitness import fitness
+import pandas as pd
+from experiment_config import TECHNIQUES
+from fitness import FitnessResult, fitness
 
 logger = logging.getLogger(__name__)
+
+#: An evaluated individual: (techniques, model, fitness, fairness score, performance score).
+ScoredIndividual = tuple[list[str], str, float, Optional[float], Optional[float]]
 
 
 # ---------------------------------------------------------------------------
 # Algorithm 1 helper functions (one per step)
 # ---------------------------------------------------------------------------
 
-def _unique_preserve_order(seq):
+def _unique_preserve_order(seq: Iterable[str]) -> list[str]:
     """
     Remove duplicate entries while preserving insertion order.
 
@@ -68,7 +74,7 @@ def _unique_preserve_order(seq):
     return out
 
 
-def _initialise_population(techniques, population_size):
+def _initialise_population(techniques: list[str], population_size: int) -> list[list[str]]:
     """
     Generate the initial population of GA individuals (Algorithm 1, Step 1).
 
@@ -96,7 +102,8 @@ def _initialise_population(techniques, population_size):
     return population
 
 
-def _unpack_fitness_result(fit_result, technique_list, model):
+def _unpack_fitness_result(fit_result: Union[FitnessResult, float], technique_list: list[str],
+                           model: str) -> ScoredIndividual:
     """
     Normalise the return value of ``fitness.fitness`` into a standard 5-tuple.
 
@@ -128,8 +135,9 @@ def _unpack_fitness_result(fit_result, technique_list, model):
     return (technique_list, model, fitness_value, fairness_score, performance_score)
 
 
-def _evaluate_population(population, dataset, protected_attribute, target_column,
-                         model, reset_cache):
+def _evaluate_population(population: list[list[str]], dataset: pd.DataFrame,
+                         protected_attribute: str, target_column: str, model: str, reset_cache: bool
+                         ) -> list[ScoredIndividual]:
     """
     Evaluate the fitness of every individual in the current population (Algorithm 1, Step 2).
 
@@ -145,7 +153,7 @@ def _evaluate_population(population, dataset, protected_attribute, target_column
         Classifier identifier.
     reset_cache : bool
         Forwarded unchanged to every ``fitness.fitness`` call.  When False,
-        the root ``experiments_cache.csv`` is used as an additional read-only
+        the ``reference/fate/fitness_cache.csv`` is used as an additional read-only
         lookup; when True, only the runtime cache is consulted.
 
     Returns
@@ -162,7 +170,8 @@ def _evaluate_population(population, dataset, protected_attribute, target_column
     return fitness_scores
 
 
-def _select_parents(fitness_scores, population_size):
+def _select_parents(fitness_scores: list[ScoredIndividual], population_size: int
+                    ) -> list[list[str]]:
     """
     Select the top 50 % of the population as parents for breeding (Algorithm 1, Step 3).
 
@@ -185,7 +194,7 @@ def _select_parents(fitness_scores, population_size):
     return [ind[0] for ind in best_individuals]
 
 
-def _apply_crossover(parent_a, parent_b, alpha):
+def _apply_crossover(parent_a: list[str], parent_b: list[str], alpha: float) -> list[str]:
     """
     Perform single-point crossover between two parent individuals (Algorithm 1, Step 4).
 
@@ -214,7 +223,7 @@ def _apply_crossover(parent_a, parent_b, alpha):
     return list(parent_a)
 
 
-def _apply_mutation(child, beta, techniques):
+def _apply_mutation(child: list[str], beta: float, techniques: list[str]) -> list[str]:
     """
     Randomly replace one technique in a child individual (Algorithm 1, Step 5).
 
@@ -244,7 +253,8 @@ def _apply_mutation(child, beta, techniques):
     return child
 
 
-def _breed_next_generation(best_techniques, population_size, alpha, beta, techniques):
+def _breed_next_generation(best_techniques: list[list[str]], population_size: int, alpha: float,
+                           beta: float, techniques: list[str]) -> list[list[str]]:
     """
     Produce the next generation via crossover, deduplication, and mutation
     (Algorithm 1, Steps 4–5).
@@ -287,8 +297,10 @@ def _breed_next_generation(best_techniques, population_size, alpha, beta, techni
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def genetic_algorithm(dataset, protected_attribute, target_column, model, generations=10,
-                      population_size=10, alpha=0.5, beta=0.5, reset_cache=False):
+def genetic_algorithm(dataset: pd.DataFrame, protected_attribute: str, target_column: str,
+                      model: Optional[str], generations: int = 10, population_size: int = 10,
+                      alpha: float = 0.5, beta: float = 0.5, reset_cache: bool = False
+                      ) -> ScoredIndividual:
     """
     Execute the FATE genetic algorithm to find an optimal fairness-aware preprocessing pipeline.
 
@@ -324,8 +336,8 @@ def genetic_algorithm(dataset, protected_attribute, target_column, model, genera
         exploration of the technique space (Algorithm 1, Step 5).
     reset_cache : bool, optional
         When False (default), fitness lookups also check the read-only root
-        cache ``experiments_cache.csv`` before evaluating.  When True, only
-        the runtime cache ``FATE_output/runtime_cache.csv`` is used — useful
+        cache ``reference/fate/fitness_cache.csv`` before evaluating.  When True, only
+        the runtime cache ``results/fate/runtime_cache.csv`` is used — useful
         for runs that must not reuse pre-computed results.
 
     Returns
@@ -364,10 +376,7 @@ def genetic_algorithm(dataset, protected_attribute, target_column, model, genera
         raise ValueError("Provide a model identifier (string) to evaluate; "
                          "the model is not part of the GA individuals.")
 
-    techniques = [
-        'standard', 'stratified_sampling', 'oversampling', 'undersampling',
-        'clustering', 'ipw', 'matching', 'min_max_scaling'
-    ]
+    techniques = list(TECHNIQUES)
 
     population = _initialise_population(techniques, population_size)
     fitness_scores = []

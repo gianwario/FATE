@@ -1,8 +1,8 @@
 """
 RQ2 experiment runner: FATE vs state-of-the-art fairness pre-processing baselines.
 
-This module re-evaluates the best FATE configurations identified in RQ1
-(``RQ1_data_analysis/rq1_fate_results_best_per_group.csv``) against three
+This module re-runs the best FATE configurations identified in RQ1
+(``results/rq1/rq1_fate_results_best_per_group.csv``) against three
 state-of-the-art pre-processing bias mitigation methods under identical 5-fold
 stratified cross-validation:
 
@@ -19,72 +19,45 @@ Evaluation metrics (identical to FATE's fitness function for comparability):
     - **Fairness**: FS = (|SPD| + |EOD| + |DI|) / 3.
     - **Execution time**: total wall-clock seconds summed across 5 folds.
 
-Output: ``RQ2_data_analysis/rq2_all_experiments_results.csv`` — long-format
+Output: ``results/rq2/rq2_all_experiments_results.csv`` — long-format
 table with one row per (dataset, protected_attribute, model, method) group.
 
-Note: The FATE re-evaluation block inside ``run_rq2`` is currently commented
-out; the FATE rows are expected to be pre-populated from RQ1 results.
+FATE rows: FATE is re-run with the GA parameters of each best RQ1
+configuration, so the output contains FATE and the three baselines for every
+group and is the direct input of ``rq2_results``.
 """
-import sys
-import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))  # noqa: E402
+import argparse
+import time
+from pathlib import Path
+from typing import Optional
 
-import time  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
+import numpy as np
+import pandas as pd
+from sklearn.metrics import average_precision_score
+from sklearn.model_selection import StratifiedKFold
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import LinearSVC
+from xgboost import XGBClassifier
 
-from sklearn.model_selection import StratifiedKFold  # noqa: E402
-from sklearn.metrics import average_precision_score  # noqa: E402
+import paths
+import preprocessing as preproc
+from experiment_config import DATASETS_BY_PATH, DatasetConfig
+from fitness import Classifier, fairness_metrics
+from main import execute_fate
+from preprocessing import prepare_data_model
 
-# === Your existing imports ===
-import preprocessing as preproc  # noqa: E402
-from preprocessing import prepare_data_model  # noqa: E402
-from fitness import fairness_metrics  # noqa: E402
-
-# AIF360 for Reweighing / DIR / FairSMOTE
+# AIF360 for Reweighing / DIR
+from aif360_setup import silence_unused_backend_notices
+silence_unused_backend_notices()
 from aif360.datasets import BinaryLabelDataset  # noqa: E402
 from aif360.algorithms.preprocessing import Reweighing, DisparateImpactRemover  # noqa: E402
-# from aif360.algorithms.preprocessing import FairSMOTE  # if you use their implementation
 
-# === Model factory (reuse or adapt) ===
-from sklearn.linear_model import LogisticRegression  # noqa: E402
-from sklearn.svm import LinearSVC  # noqa: E402
-from sklearn.ensemble import RandomForestClassifier  # noqa: E402
-from xgboost import XGBClassifier  # noqa: E402
+BEST_CFG_NAME = "rq1_fate_results_best_per_group.csv"
+OUTPUT_NAME = "rq2_all_experiments_results.csv"
 
 
-BEST_CFG_CSV = "RQ1_data_analysis/rq1_fate_results_best_per_group.csv"
-OUTPUT_CSV = "RQ2_data_analysis/rq2_all_experiments_results.csv"
-
-
-DATASETS = [
-    {
-        "name": "adult",
-        "path": "datasets/adult.csv",
-        "preparer_name": "prepare_adult",
-        "protected_attributes": ["race", "sex"],
-        "target": "salary",
-    },
-    {
-        "name": "german",
-        "path": "datasets/german.csv",
-        "preparer_name": "prepare_german",
-        "protected_attributes": ["sex", "age"],
-        "target": "Target",
-    },
-    {
-        "name": "heart",
-        "path": "datasets/heart.csv",
-        "preparer_name": "prepare_heart",
-        "protected_attributes": ["sex", "age"],
-        "target": "num",
-    },
-]
-
-DATASETS_BY_PATH = {ds["path"]: ds for ds in DATASETS}
-
-
-def build_model(model_id: str):
+def build_model(model_id: str) -> Classifier:
     """
     Instantiate a classifier by string identifier with the same hyperparameters as ``fitness.py``.
 
@@ -118,7 +91,7 @@ def build_model(model_id: str):
     return classifier
 
 
-def prepare_sample_ready(ds_cfg, protected_attr: str):
+def prepare_sample_ready(ds_cfg: DatasetConfig, protected_attr: str) -> pd.DataFrame:
     """
     Load and prepare a dataset using the same pipeline as the GA runner.
 
@@ -144,7 +117,7 @@ def prepare_sample_ready(ds_cfg, protected_attr: str):
         If *protected_attr* is not present in the dataset after the
         dataset-specific preparer is applied.
     """
-    raw = pd.read_csv(ds_cfg["path"])
+    raw = pd.read_csv(paths.REPO_ROOT / ds_cfg["path"])
 
     preparer = getattr(preproc, ds_cfg["preparer_name"])
     processed = preparer(raw)
@@ -164,7 +137,7 @@ def prepare_sample_ready(ds_cfg, protected_attr: str):
     return sample_ready
 
 
-def compute_fairness_score_from_metrics(sp, eo, di):
+def compute_fairness_score_from_metrics(sp: float, eo: float, di: float) -> float:
     """
     Aggregate three fairness metric values into a single Fairness Score (FS).
 
@@ -192,7 +165,7 @@ def compute_fairness_score_from_metrics(sp, eo, di):
     return fairness_score
 
 
-def binarize_protected_for_fairsmote(s, protected_attribute: str):
+def binarize_protected_for_fairsmote(s: pd.Series, protected_attribute: str) -> pd.Series:
     """
     Convert the protected attribute to a binary 0/1 indicator for FairSMOTE.
 
@@ -227,7 +200,230 @@ def binarize_protected_for_fairsmote(s, protected_attribute: str):
     return (s_series == mode_val).astype(int)
 
 
-def run_baseline_method(sample_ready, ds_cfg, protected_attr, model_id, method_name):
+def _aif360_training_dataset(x_train: pd.DataFrame, y_train: pd.Series, s_train: pd.Series,
+                             target: str, protected_attr: str) -> BinaryLabelDataset:
+    """
+    Wrap one training fold in an AIF360 ``BinaryLabelDataset``.
+
+    Parameters
+    ----------
+    x_train : pd.DataFrame
+        Training features (protected attribute excluded).
+    y_train : pd.Series
+        Training labels.
+    s_train : pd.Series
+        Protected attribute values of the training rows.
+    target : str
+        Label column name.
+    protected_attr : str
+        Protected attribute column name.
+
+    Returns
+    -------
+    BinaryLabelDataset
+    """
+    return BinaryLabelDataset(
+        df=pd.concat([x_train, y_train, s_train], axis=1),
+        label_names=[target],
+        protected_attribute_names=[protected_attr],
+        favorable_label=1,
+        unfavorable_label=0,
+    )
+
+
+def _reweighing_training_data(bld_train: BinaryLabelDataset, feature_columns: pd.Index, target: str,
+                              protected_attr: str) -> tuple[pd.DataFrame, pd.Series, np.ndarray]:
+    """
+    Apply AIF360 ``Reweighing`` to a training fold.
+
+    Parameters
+    ----------
+    bld_train : BinaryLabelDataset
+        Output of ``_aif360_training_dataset``.
+    feature_columns : pd.Index
+        Feature columns to keep.
+    target : str
+    protected_attr : str
+
+    Returns
+    -------
+    tuple
+        ``(x_tr, y_tr, sample_weight)``.
+    """
+    rw = Reweighing(
+        unprivileged_groups=[{protected_attr: 0}],
+        privileged_groups=[{protected_attr: 1}],
+    )
+    bld_rw = rw.fit_transform(bld_train)
+    df_rw = bld_rw.convert_to_dataframe()[0]
+    return df_rw[feature_columns], df_rw[target], bld_rw.instance_weights
+
+
+def _dir_training_data(bld_train: BinaryLabelDataset, feature_columns: pd.Index, y_train: pd.Series,
+                       protected_attr: str) -> tuple[pd.DataFrame, pd.Series]:
+    """
+    Apply AIF360 ``DisparateImpactRemover`` (repair level 1.0) to a training fold.
+
+    Only the features are repaired; labels are left unchanged.
+
+    Parameters
+    ----------
+    bld_train : BinaryLabelDataset
+    feature_columns : pd.Index
+    y_train : pd.Series
+    protected_attr : str
+
+    Returns
+    -------
+    tuple
+        ``(x_tr, y_tr)``.
+    """
+    dir_ = DisparateImpactRemover(sensitive_attribute=protected_attr, repair_level=1.0)
+    bld_dir = dir_.fit_transform(bld_train)
+    df_dir = bld_dir.convert_to_dataframe()[0]
+    return df_dir[feature_columns], y_train
+
+
+def _oversample_group(df_group: pd.DataFrame, target_size: int) -> pd.DataFrame:
+    """
+    Oversample *df_group* with replacement up to *target_size* rows.
+
+    Groups that are empty or already large enough are returned unchanged.
+
+    Parameters
+    ----------
+    df_group : pd.DataFrame
+    target_size : int
+
+    Returns
+    -------
+    pd.DataFrame
+    """
+    if len(df_group) == 0 or len(df_group) >= target_size:
+        return df_group
+    extra = target_size - len(df_group)
+    return pd.concat(
+        [df_group, df_group.sample(n=extra, replace=True, random_state=42)],
+        ignore_index=True
+    )
+
+
+def _fairsmote_training_data(x_train: pd.DataFrame, y_train: pd.Series, s_train: pd.Series,
+                             protected_attr: str) -> tuple[pd.DataFrame, pd.Series]:
+    """
+    FairSMOTE-style rebalancing of a training fold (in-house implementation).
+
+    Every (y, s) quadrant is oversampled with replacement to the size of the
+    largest quadrant.
+
+    Parameters
+    ----------
+    x_train : pd.DataFrame
+    y_train : pd.Series
+    s_train : pd.Series
+    protected_attr : str
+
+    Returns
+    -------
+    tuple
+        ``(x_tr, y_tr)``.
+
+    Raises
+    ------
+    ValueError
+        If the labels or the binarised protected attribute are not binary.
+    """
+    # 1) Binarize protected attribute for FairSMOTE
+    s_bin = binarize_protected_for_fairsmote(s_train, protected_attribute=protected_attr)
+
+    # 2) Build a working DataFrame with features + y + s_bin
+    df_train = pd.DataFrame(x_train.copy())
+    df_train['_y'] = pd.Series(y_train).values
+    df_train['_s'] = pd.Series(s_bin).values
+    orig_feature_cols = list(x_train.columns)
+
+    # 3) Check binary assumption for safety
+    y_vals = set(df_train['_y'].unique())
+    s_vals = set(df_train['_s'].unique())
+    if not y_vals.issubset({0, 1}) or not s_vals.issubset({0, 1}):
+        raise ValueError(f"FairSMOTE expects binary y and s. Got y={y_vals}, s={s_vals}")
+
+    # 4) Split into four (y,s) groups and 5) oversample each up to the largest
+    groups = [df_train[(df_train['_y'] == yv) & (df_train['_s'] == sv)]
+              for yv, sv in ((0, 0), (0, 1), (1, 0), (1, 1))]
+    max_n = max(len(g) for g in groups)
+
+    # 6) Reassemble balanced training data
+    df_balanced = pd.concat([_oversample_group(g, max_n) for g in groups],
+                            ignore_index=True)
+
+    # 7) Split back into features / y
+    y_tr = df_balanced['_y'].reset_index(drop=True)
+    x_tr = df_balanced[orig_feature_cols].reset_index(drop=True)
+    return x_tr, y_tr
+
+
+def _mitigated_training_data(method_name: str, x_train: pd.DataFrame, y_train: pd.Series,
+                             s_train: pd.Series, target: str, protected_attr: str
+                             ) -> tuple[pd.DataFrame, pd.Series, Optional[np.ndarray]]:
+    """
+    Apply the requested bias mitigation method to one training fold.
+
+    Parameters
+    ----------
+    method_name : str
+        ``'fairsmote'``, ``'reweighing'`` or ``'dir'`` (case-insensitive).
+    x_train : pd.DataFrame
+    y_train : pd.Series
+    s_train : pd.Series
+    target : str
+    protected_attr : str
+
+    Returns
+    -------
+    tuple
+        ``(x_tr, y_tr, sample_weight)``; *sample_weight* is ``None`` except for
+        Reweighing.  Unknown methods return the fold unchanged.
+    """
+    method = method_name.lower()
+    if method in ("reweighing", "dir", "fairsmote"):
+        bld_train = _aif360_training_dataset(x_train, y_train, s_train, target, protected_attr)
+    if method == "reweighing":
+        return _reweighing_training_data(bld_train, x_train.columns, target, protected_attr)
+    if method in ("dir", "disparate_impact_remover"):
+        x_tr, y_tr = _dir_training_data(bld_train, x_train.columns, y_train, protected_attr)
+        return x_tr, y_tr, None
+    if method == "fairsmote":
+        x_tr, y_tr = _fairsmote_training_data(x_train, y_train, s_train, protected_attr)
+        return x_tr, y_tr, None
+    return x_train.copy(), y_train.copy(), None
+
+
+def _positive_class_scores(model: Classifier, x_test: pd.DataFrame) -> np.ndarray:
+    """
+    Return positive-class scores in [0, 1] for *x_test*.
+
+    Uses ``predict_proba`` when available; otherwise min-max normalises the
+    ``decision_function`` output (LinearSVC).
+
+    Parameters
+    ----------
+    model : Classifier
+        Fitted classifier.
+    x_test : pd.DataFrame
+
+    Returns
+    -------
+    np.ndarray
+    """
+    if hasattr(model, "predict_proba"):
+        return model.predict_proba(x_test)[:, 1]
+    df_s = model.decision_function(x_test)
+    return (df_s - df_s.min()) / (df_s.max() - df_s.min() + 1e-12)
+
+
+def run_baseline_method(sample_ready: pd.DataFrame, ds_cfg: DatasetConfig, protected_attr: str,
+                        model_id: str, method_name: str) -> dict[str, float]:
     """
     Evaluate one bias mitigation baseline under 5-fold stratified cross-validation.
 
@@ -276,7 +472,7 @@ def run_baseline_method(sample_ready, ds_cfg, protected_attr, model_id, method_n
     target = ds_cfg["target"]
     df = sample_ready.copy()
 
-    X = df.drop(columns=[target, protected_attr])
+    x = df.drop(columns=[target, protected_attr])
     y = df[target]
     s = df[protected_attr]
 
@@ -288,117 +484,20 @@ def run_baseline_method(sample_ready, ds_cfg, protected_attr, model_id, method_n
     dis = []
     times = []
 
-    for fold_idx, (train_idx, test_idx) in enumerate(skf.split(X, y), 1):
-        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+    for fold_idx, (train_idx, test_idx) in enumerate(skf.split(x, y), 1):
+        x_train, x_test = x.iloc[train_idx], x.iloc[test_idx]
         y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
         s_train = s.iloc[train_idx]
 
         start = time.time()
-
-        # Build AIF360 dataset if needed
-        if method_name.lower() in ["reweighing", "dir", "fairsMote", "fairsmote"]:
-            bld_train = BinaryLabelDataset(
-                df=pd.concat([X_train, y_train, s_train], axis=1),
-                label_names=[target],
-                protected_attribute_names=[protected_attr],
-                favorable_label=1,
-                unfavorable_label=0,
-            )
-
-        sample_weight = None
-
-        if method_name.lower() == "reweighing":
-            rw = Reweighing(
-                unprivileged_groups=[{protected_attr: 0}],
-                privileged_groups=[{protected_attr: 1}],
-            )
-            bld_rw = rw.fit_transform(bld_train)
-            df_rw = bld_rw.convert_to_dataframe()[0]
-            X_tr = df_rw[X.columns]
-            y_tr = df_rw[target]
-            sample_weight = bld_rw.instance_weights
-
-        elif method_name.lower() in ["dir", "disparate_impact_remover"]:
-            dir_ = DisparateImpactRemover(
-                sensitive_attribute=protected_attr,
-                repair_level=1.0,
-            )
-            bld_dir = dir_.fit_transform(bld_train)
-            df_dir = bld_dir.convert_to_dataframe()[0]
-            X_tr = df_dir[X.columns]
-            y_tr = y_train
-
-        elif method_name.lower() in ["fairsmote", "fairsMote", "fairsmoTe"]:
-            """
-            Generic FairSMOTE-style oversampling implementation.
-            """
-
-            # 1) Binarize protected attribute for FairSMOTE
-            s_bin = binarize_protected_for_fairsmote(s_train, protected_attribute=protected_attr)
-
-            # 2) Build a working DataFrame with features + y + s_bin
-            df_train = pd.DataFrame(X_train.copy())
-            df_train['_y'] = pd.Series(y_train).values
-            df_train['_s'] = pd.Series(s_bin).values
-
-            # Keep original feature columns so we can restore them later
-            orig_feature_cols = list(X_train.columns)
-
-            # 3) Check binary assumption for safety
-            y_vals = set(df_train['_y'].unique())
-            s_vals = set(df_train['_s'].unique())
-            if not y_vals.issubset({0, 1}) or not s_vals.issubset({0, 1}):
-                raise ValueError(f"FairSMOTE expects binary y and s. Got y={y_vals}, s={s_vals}")
-
-            # 4) Split into four (y,s) groups
-            g00 = df_train[(df_train['_y'] == 0) & (df_train['_s'] == 0)]
-            g01 = df_train[(df_train['_y'] == 0) & (df_train['_s'] == 1)]
-            g10 = df_train[(df_train['_y'] == 1) & (df_train['_s'] == 0)]
-            g11 = df_train[(df_train['_y'] == 1) & (df_train['_s'] == 1)]
-
-            n00, n01, n10, n11 = len(g00), len(g01), len(g10), len(g11)
-            max_n = max(n00, n01, n10, n11)
-
-            def oversample_group(df_group, target_size):
-                if len(df_group) == 0 or len(df_group) >= target_size:
-                    return df_group
-                extra = target_size - len(df_group)
-                return pd.concat(
-                    [df_group, df_group.sample(n=extra, replace=True, random_state=42)],
-                    ignore_index=True
-                )
-
-            # 5) Oversample each group up to max_n
-            g00_bal = oversample_group(g00, max_n)
-            g01_bal = oversample_group(g01, max_n)
-            g10_bal = oversample_group(g10, max_n)
-            g11_bal = oversample_group(g11, max_n)
-
-            # 6) Reassemble balanced training data
-            df_balanced = pd.concat([g00_bal, g01_bal, g10_bal, g11_bal], ignore_index=True)
-
-            # 7) Split back into X / y / s
-            y_tr = df_balanced['_y'].reset_index(drop=True)
-            X_tr = df_balanced[orig_feature_cols].reset_index(drop=True)
-
-        else:
-            # Should not happen; you can also add a "no mitigation" method if you want
-            X_tr = X_train.copy()
-            y_tr = y_train.copy()
-
+        x_tr, y_tr, sample_weight = _mitigated_training_data(
+            method_name, x_train, y_train, s_train, target, protected_attr)
         model = build_model(model_id)
         if sample_weight is not None:
-            model.fit(X_tr, y_tr, sample_weight=sample_weight)
+            model.fit(x_tr, y_tr, sample_weight=sample_weight)
         else:
-            model.fit(X_tr, y_tr)
-
-        # Predict on test
-        if hasattr(model, "predict_proba"):
-            y_score = model.predict_proba(X_test)[:, 1]
-        else:
-            df_s = model.decision_function(X_test)
-            y_score = (df_s - df_s.min()) / (df_s.max() - df_s.min() + 1e-12)
-
+            model.fit(x_tr, y_tr)
+        y_score = _positive_class_scores(model, x_test)
         y_pred = (y_score >= 0.5).astype(int)
 
         elapsed = time.time() - start
@@ -436,121 +535,160 @@ def run_baseline_method(sample_ready, ds_cfg, protected_attr, model_id, method_n
     }
 
 
-def run_rq2():
+#: Baselines compared with FATE in RQ2: (label used in the results, method name).
+BASELINES: list[tuple[str, str]] = [
+    ("FairSMOTE", "fairsmote"),
+    ("Reweighing", "reweighing"),
+    ("DIR", "dir"),
+]
+
+
+def _fate_rows(sample_ready: pd.DataFrame, ds_cfg: DatasetConfig, cfg_row: pd.Series,
+               reset_cache: bool) -> list[dict[str, object]]:
     """
-    Execute the full RQ2 experiment: evaluate baselines for the best FATE configurations.
+    Re-run FATE with the GA parameters of one best RQ1 configuration.
 
-    For each row in the best-per-group FATE results from RQ1, loads the
-    corresponding dataset, prepares it identically to the FATE run, then
-    evaluates the configured baselines (FairSMOTE by default; Reweighing and
-    DIR are commented out for deferred evaluation).
+    Parameters
+    ----------
+    sample_ready : pd.DataFrame
+        Prepared dataset (same preparation as in the RQ1 grid).
+    ds_cfg : DatasetConfig
+    cfg_row : pd.Series
+        Row of the best-per-group RQ1 file (model, protected attribute and
+        GA parameters N, G, alpha, beta).
+    reset_cache : bool
+        Forwarded to ``execute_fate``.
 
-    Results are collected into a long-format DataFrame and written to
-    ``RQ2_data_analysis/rq2_all_experiments_results.csv``.
-
-    Notes
-    -----
-    The FATE re-evaluation block (``execute_fate`` call) is intentionally
-    commented out.  The output CSV is expected to already contain FATE rows
-    from the RQ1 runs (via ``main.py``), so this function only appends the
-    three baseline method rows.  Run ``main.py`` first to populate the FATE
-    rows before calling this function.
+    Returns
+    -------
+    list of dict
+        One RQ2 result row (method ``FATE``).
     """
-    best_cfg = pd.read_csv(BEST_CFG_CSV)
+    fate_rows = execute_fate(
+        sample_ready=sample_ready,
+        ds_name=ds_cfg["name"],
+        ds_path=ds_cfg["path"],
+        protected_attribute=cfg_row["protected_attribute"],
+        target=ds_cfg["target"],
+        models=[cfg_row["model_identifier"]],
+        population_size=int(cfg_row["population_size"]),
+        generations=int(cfg_row["generations"]),
+        alpha=float(cfg_row["alpha"]),
+        beta=float(cfg_row["beta"]),
+        summary_path=None,
+        reset_cache=reset_cache,
+    )
+    return [{
+        "dataset_name": ds_cfg["name"],
+        "protected_attribute": fr["protected_attribute"],
+        "model_identifier": fr["model_identifier"],
+        "method": "FATE",
+        "performance_score": fr["performance_score"],
+        "fairness_score": fr["fairness_score"],
+        "elapsed_seconds": fr["elapsed_seconds"],
+        "error": fr["error"],
+    } for fr in fate_rows]
 
-    results = []
 
-    for _, row in best_cfg.iterrows():
-        ds_path = row["dataset"]
-        model_id = row["model_identifier"]
-        prot_attr = row["protected_attribute"]
-        pop = int(row["population_size"])  # noqa: F841
-        gens = int(row["generations"])  # noqa: F841
-        alpha = float(row["alpha"])  # noqa: F841
-        beta = float(row["beta"])  # noqa: F841
+def _baseline_row(sample_ready: pd.DataFrame, ds_cfg: DatasetConfig, prot_attr: str,
+                  model_id: str, label: str, method_name: str) -> dict[str, object]:
+    """
+    Evaluate one baseline and return its RQ2 result row.
 
+    Parameters
+    ----------
+    sample_ready : pd.DataFrame
+    ds_cfg : DatasetConfig
+    prot_attr : str
+    model_id : str
+    label : str
+        Method label stored in the results (e.g. ``'DIR'``).
+    method_name : str
+        Method identifier passed to ``run_baseline_method``.
+
+    Returns
+    -------
+    dict
+        Result row; on failure the metrics are NaN and ``error`` holds the message.
+    """
+    row: dict[str, object] = {
+        "dataset_name": ds_cfg["name"],
+        "protected_attribute": prot_attr,
+        "model_identifier": model_id,
+        "method": label,
+    }
+    try:
+        metrics = run_baseline_method(sample_ready, ds_cfg, prot_attr, model_id, method_name)
+        row.update(performance_score=metrics["performance_score"],
+                   fairness_score=metrics["fairness_score"],
+                   elapsed_seconds=metrics["elapsed_seconds"], error=None)
+    except Exception as e:
+        print(f"[ERROR] Baseline {label} failed: {e}")
+        row.update(performance_score=np.nan, fairness_score=np.nan,
+                   elapsed_seconds=0.0, error=str(e))
+    return row
+
+
+def run_rq2(best_cfg_csv: Path, output_csv: Path, reset_cache: bool = False) -> None:
+    """
+    Execute the RQ2 experiment: FATE and the three baselines on the best RQ1 configurations.
+
+    For each row of the best-per-group RQ1 file, the dataset is prepared as in
+    the RQ1 grid, FATE is re-run with that row's GA parameters (N, G, alpha,
+    beta), and FairSMOTE, Reweighing and DIR are evaluated.  Results are
+    written in long format (one row per group and method) to *output_csv*.
+
+    Because the genetic algorithm is stochastic, the FATE rows of a new run
+    are not expected to coincide exactly with the archived ones in
+    ``reference/rq2/rq2_all_experiments_results.csv`` (the run reported in
+    the paper).
+
+    Parameters
+    ----------
+    best_cfg_csv : Path
+        ``rq1_fate_results_best_per_group.csv`` (output of RQ1).
+    output_csv : Path
+        Destination CSV (default ``results/rq2/rq2_all_experiments_results.csv``).
+    reset_cache : bool, optional
+        Forwarded to the FATE re-runs (see ``fitness.fitness``).
+    """
+    best_cfg = pd.read_csv(best_cfg_csv)
+    results: list[dict[str, object]] = []
+    for _, cfg_row in best_cfg.iterrows():
+        ds_path = cfg_row["dataset"]
         if ds_path not in DATASETS_BY_PATH:
             print(f"[WARN] Dataset path {ds_path} not in DATASETS config, skipping.")
             continue
         ds_cfg = DATASETS_BY_PATH[ds_path]
-
+        model_id = cfg_row["model_identifier"]
+        prot_attr = cfg_row["protected_attribute"]
         print(f"\n=== RQ2 block: ds={ds_cfg['name']} prot={prot_attr} model={model_id} ===")
+        sample_ready = prepare_sample_ready(ds_cfg, prot_attr)
 
-        # --- common prepared dataset for this combo ---
-        try:
-            sample_ready = prepare_sample_ready(ds_cfg, prot_attr)
-        except Exception as e:
-            print(f"[ERROR] prepare_sample_ready failed: {e}")
-            # record failure row for FATE + baselines if you want
-            continue
-
-        # --- 1) FATE: run GA via execute_fate with selected hyperparams ---
-        '''
         print("  -> Running FATE (GA)...")
-        fate_rows = execute_fate(
-            sample_ready=sample_ready,
-            ds_name=ds_cfg["name"],
-            ds_path=ds_cfg["path"],
-            protected_attribute=prot_attr,
-            target=ds_cfg["target"],
-            models=[model_id],        # only this model
-            population_size=pop,
-            generations=gens,
-            alpha=alpha,
-            beta=beta,
-            summary_path=None
-        )
-        # execute_fate returns a list of rows (one per model)
-        for fr in fate_rows:
-            results.append({
-                "dataset_name": ds_cfg["name"],
-                "protected_attribute": fr["protected_attribute"],
-                "model_identifier": fr["model_identifier"],
-                "method": "FATE",
-                "performance_score": fr["performance_score"],
-                "fairness_score": fr["fairness_score"],
-                "elapsed_seconds": fr["elapsed_seconds"],
-                "error": fr["error"],
-            })
-        '''
-        # --- 2) Baselines: FairSMOTE, Reweighing, DIR ---
-        baselines = [
-            ("FairSMOTE", "fairsmote"),
-            # ("Reweighing", "reweighing"),
-            # ("DIR", "dir"),
-        ]
-        for label, method_name in baselines:
+        results.extend(_fate_rows(sample_ready, ds_cfg, cfg_row, reset_cache))
+        for label, method_name in BASELINES:
             print(f"  -> Running baseline: {label}...")
-            try:
-                metrics = run_baseline_method(
-                    sample_ready, ds_cfg, prot_attr, model_id, method_name)
-                results.append({
-                    "dataset_name": ds_cfg["name"],
-                    "protected_attribute": prot_attr,
-                    "model_identifier": model_id,
-                    "method": label,
-                    "performance_score": metrics["performance_score"],
-                    "fairness_score": metrics["fairness_score"],
-                    "elapsed_seconds": metrics["elapsed_seconds"],
-                    "error": None,
-                })
-            except Exception as e:
-                print(f"[ERROR] Baseline {label} failed: {e}")
-                results.append({
-                    "dataset_name": ds_cfg["name"],
-                    "protected_attribute": prot_attr,
-                    "model_identifier": model_id,
-                    "method": label,
-                    "performance_score": np.nan,
-                    "fairness_score": np.nan,
-                    "elapsed_seconds": 0.0,
-                    "error": str(e),
-                })
+            results.append(_baseline_row(sample_ready, ds_cfg, prot_attr, model_id,
+                                         label, method_name))
 
     df = pd.DataFrame(results)
-    df.to_csv(OUTPUT_CSV, index=False)
-    print(f"\nRQ2 experiments saved to {OUTPUT_CSV}")
+    paths.ensure_dir(output_csv.parent)
+    df.to_csv(output_csv, index=False)
+    print(f"\nRQ2 experiments saved to {output_csv}")
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    """Run the RQ2 baseline experiments on the best FATE configurations of RQ1."""
+    parser = argparse.ArgumentParser(description="RQ2: bias mitigation baselines.")
+    parser.add_argument("--best-configs", type=Path,
+                        default=paths.RQ1_RESULTS_DIR / BEST_CFG_NAME)
+    parser.add_argument("--out", type=Path, default=paths.RQ2_RESULTS_DIR / OUTPUT_NAME)
+    parser.add_argument("--reset-cache", action="store_true",
+                        help="FATE re-runs ignore the archived fitness cache")
+    args = parser.parse_args(argv)
+    run_rq2(args.best_configs, args.out, args.reset_cache)
 
 
 if __name__ == "__main__":
-    run_rq2()
+    main()

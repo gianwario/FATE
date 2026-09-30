@@ -1,5 +1,0 @@
-dataset,model_identifier,protected_attribute,population_size,generations,alpha,beta,techniques,model_used,fitness,fairness_score,performance_score,elapsed_seconds,error
-datasets/german.csv,rf,age,100,15,0.0,1.0,"['oversampling', 'ipw', 'min_max_scaling', 'clustering']",rf,0.491396420156522,0.013225299869502,0.996018140182546,23.3060622215271,
-datasets/german.csv,xgb,age,100,10,1.0,0.5,"['min_max_scaling', 'clustering', 'oversampling']",xgb,0.4766455061770242,0.0377515236805124,0.9910425360345608,15.351337194442747,
-datasets/heart.csv,lr,age,5,20,0.5,1.0,"['stratified_sampling', 'undersampling', 'standard']",lr,0.4756944444444444,0.0486111111111111,1.0,1.5371103286743164,
-datasets/adult.csv,svc,race,100,5,0.25,0.75,"['clustering', 'undersampling', 'min_max_scaling', 'standard', 'oversampling', 'stratified_sampling']",svc,0.4523005463832226,0.0711564562990854,0.9757575490655306,60.20934557914734,

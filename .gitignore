@@ -210,3 +210,8 @@ __marimo__/
 *pycache*
 
 *.idea*
+# macOS metadata
+.DS_Store
+
+# Outputs of a run (see paths.py); the paper outputs live in reference/
+results/
