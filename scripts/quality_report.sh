@@ -15,5 +15,5 @@ radon cc -s -a --exclude "venv/*,.venv/*" .
 
 echo ""
 echo "== pytest + branch coverage =="
-coverage run --branch -m pytest -q
+coverage run --branch --source=. --omit="tests/*" -m pytest -q  # all modules, also untested ones
 coverage report --show-missing

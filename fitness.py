@@ -783,7 +783,8 @@ def _run_kfold_evaluation(x: pd.DataFrame, y: pd.Series, data: pd.DataFrame, mod
     Parameters
     ----------
     x : pd.DataFrame
-        Feature matrix (protected attribute excluded).
+        Feature matrix: all columns except the target (the protected
+        attribute is included as a feature).
     y : pd.Series
         Binary label vector.
     data : pd.DataFrame

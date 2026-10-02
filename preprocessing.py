@@ -240,8 +240,9 @@ def prepare_data_model(df: pd.DataFrame, target_column: str,
     Notes
     -----
     The returned DataFrame still contains the protected attribute column.
-    ``fitness.fitness`` drops it from X before training so that the classifier
-    does not directly observe the protected attribute.
+    ``fitness.fitness`` uses every column except the target as a feature, so
+    the classifier also receives the protected attribute; the RQ2 baselines
+    (``preprocessing_experiments.py``) exclude it from the features.
     """
 
     df = df.copy()

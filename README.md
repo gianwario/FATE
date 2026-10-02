@@ -181,7 +181,7 @@ Using the reference grid, stages 2–3 reproduce the archived analyses exactly:
 | --- | --- | --- |
 | `rq1_fate_by_*.csv`, `rq1_fate_full_paramgrid_summary.csv` | `reference/rq1/` | Identical |
 | `rq2_hypothesis_tests.csv` (from `reference/rq2/rq2_all_experiments_results.csv`) | `reference/rq2/rq2_hypothesis_tests.csv` | Identical in every column of the archived file; the regenerated file adds the symmetry check, the sign test and the Holm-adjusted p-values (Section 6) |
-| `rq1_fate_results_best_per_group.csv` | `reference/rq1/` (Table 3) | Identical fitness, FS, PS and pipelines for all 24 groups. See the note on ties below. |
+| `rq1_fate_results_best_per_group.csv` | `reference/rq1/` (Table 3) | Identical fitness, FS and PS for all 24 groups; the configuration and pipeline reported for each group are among the tied best configurations (see the note on ties below). |
 
 **Ties in Table 3.** Many GA configurations reach the same best pipeline, and therefore the same fitness, FS and PS. Stage 2b keeps the first tied configuration in file order and also writes *all* tied configurations to `rq1_fate_results_tied_best.csv`. Every configuration reported in the paper appears in that file.
 
@@ -312,6 +312,22 @@ radon cc -s -a .               # cyclomatic complexity of the whole codebase
 - **Linter.** `.flake8` is the configuration provided by the reviewers, used verbatim: line length 100, maximum complexity 10, naming conventions (pep8-naming) and type annotations (flake8-annotations). The codebase passes it with no warnings; every function and method is type-annotated.
 - **Complexity.** Radon is applied to every module, including the RQ1/RQ2 scripts and the tests. The full per-function report is in `docs/code_quality.md`.
 - **Test isolation.** Tests use a temporary fitness cache and never write to `results/`.
+- **Coverage.** `scripts/quality_report.sh` measures branch coverage over every module of the repository, including those that no test imports (reported at 0%). Branch coverage at the time of the second revision (86 tests):
+
+  | Module | Branch coverage | What the tests cover |
+  | --- | ---: | --- |
+  | `numerics.py` | 100% | floating-point policy |
+  | `genetic_algorithm.py` | 95% | initialisation, selection, crossover, mutation, end-to-end run |
+  | `practices.py` | 91% | each Data Preparation practice |
+  | `RQ2_data_analysis/rq2_results.py` | 83% | Vargha–Delaney A₁₂, sign test, symmetry test, Holm correction; regression test against the archived Table 4 |
+  | `fitness.py` | 79% | fairness metrics, fitness computation, undefined values, cache |
+  | `preprocessing.py` | 78% | cleaning, encoding, target binarisation, Adult/German/Heart preparation |
+  | `RQ2_data_analysis/preprocessing_experiments.py` | 68% | FairSMOTE, Reweighing and DIR baselines, end to end |
+  | `main.py` | 34% | error handling of a GA run (the command-line interface and the parallel grid are exercised by `run_replication.sh --mode fast`) |
+  | `RQ1_data_analysis/*` | 0% | not unit-tested (see below) |
+  | **Total** | **59%** | |
+
+  We added unit tests where the code implements a method whose correctness determines the results: the genetic algorithm, the fitness and fairness computation, the dataset preparation, the baselines and the statistical procedures of Table 4. The RQ1 scripts only aggregate the archived results with pandas group-by operations and draw figures; rather than unit-testing them, we check their output end to end against the archived results (Section 5).
 - **Numerical warnings.** `pytest.ini` promotes every `RuntimeWarning` to an error, so the suite passes only if no test triggers a division by zero, overflow or invalid value ([Section 7.1](#71-floating-point-policy)).
 
 ---
