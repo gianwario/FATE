@@ -1,50 +1,67 @@
 """
-RQ2 statistical analysis: Wilcoxon signed-rank tests and Vargha–Delaney A₁₂ effect sizes.
+RQ2 statistical analysis: hypothesis tests H1a–H3c (Table 4 of the paper).
 
-For each combination of (metric × baseline method), this module:
+For each (metric × baseline) pair, the per-configuration results of FATE and of
+the baseline are paired on (dataset_name, protected_attribute,
+model_identifier) — 24 pairs — and the following are computed:
 
-1. Pivots ``rq2_all_experiments_results.csv`` to align paired (FATE, baseline)
-   observations per (dataset_name, protected_attribute, model_identifier) group.
-2. Runs the two-sided Wilcoxon signed-rank test (appropriate given non-normal
-   differences confirmed by ``assumptions.py``).
-3. Computes the Vargha–Delaney A₁₂ effect size, adjusted for metric direction
-   (A₁₂_eff > 0.5 always means FATE is favoured regardless of whether higher
-   or lower is better for the metric).
-4. Labels the outcome: ``FATE_better``, ``Baseline_better``, ``No_diff``, or
-   ``Tie``.
+1. **Wilcoxon signed-rank test** (two-sided, exact) on the paired differences
+   ``d = FATE − baseline``.  This is the test reported in the paper.
+2. **Symmetry check** of ``d``.  The Wilcoxon signed-rank test does not assume
+   normality, but it assumes that the differences are symmetric about their
+   median.  Symmetry is tested with the Miao–Gel–Gastwirth (MGG) test, whose
+   statistic is ``sqrt(n) · (mean(d) − median(d)) / J`` with
+   ``J = sqrt(pi/2) · mean(|d − median(d)|)``; its null distribution is
+   obtained by a symmetrised bootstrap (resampling from ``d`` reflected about
+   its median, ``BOOTSTRAP_REPLICATES`` replicates, fixed seed).
+3. **Exact sign test** on ``d`` (zero differences discarded).  The sign test
+   does not assume symmetry, so it is the reference for the comparisons whose
+   differences are not symmetric.
+4. **Holm–Bonferroni correction** over the nine hypotheses, applied separately
+   to the Wilcoxon and to the sign-test p-values.  Significance is decided on
+   the Holm-adjusted p-values at ``ALPHA``.
+5. **Vargha–Delaney A₁₂** effect size, oriented so that ``a12_effective > 0.5``
+   always favours FATE (lower is better for fairness_score and
+   elapsed_seconds, higher is better for performance_score).
 
-Results are saved to ``results/rq2/rq2_hypothesis_tests.csv`` and support
-the nine hypotheses tested in the paper:
+Hypotheses:
 
-    H1a/b/c – FATE achieves lower fairness_score than FairSMOTE / Reweighing / DIR.
-    H2a/b/c – FATE achieves higher performance_score.
-    H3a/b/c – FATE has lower elapsed_seconds (execution time).
+    H1a/b/c – fairness_score    FATE vs FairSMOTE / Reweighing / DIR
+    H2a/b/c – performance_score FATE vs FairSMOTE / Reweighing / DIR
+    H3a/b/c – elapsed_seconds   FATE vs FairSMOTE / Reweighing / DIR
+
+Input:  ``results/rq2/rq2_all_experiments_results.csv`` (or ``--input``)
+Output: ``results/rq2/rq2_hypothesis_tests.csv`` (or ``--out``)
 """
 import argparse
 from pathlib import Path
 from typing import Optional
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 from numpy.typing import ArrayLike
-from scipy.stats import wilcoxon
+from scipy.stats import binomtest, rankdata, wilcoxon
 
 import paths
-
 
 RESULTS_NAME = "rq2_all_experiments_results.csv"
 TESTS_NAME = "rq2_hypothesis_tests.csv"
 
+ALPHA = 0.05
+BOOTSTRAP_REPLICATES = 10_000
+BOOTSTRAP_SEED = 20260930
+FATE_LABEL = "FATE"
+METRICS = ["fairness_score", "performance_score", "elapsed_seconds"]
+BASELINES = ["FairSMOTE", "Reweighing", "DIR"]
+PAIR_KEYS = ["dataset_name", "protected_attribute", "model_identifier"]
 
 HYPOTHESIS_MAP = {
     ("fairness_score", "FairSMOTE"): "H1a",
     ("fairness_score", "Reweighing"): "H1b",
     ("fairness_score", "DIR"): "H1c",
-
     ("performance_score", "FairSMOTE"): "H2a",
     ("performance_score", "Reweighing"): "H2b",
     ("performance_score", "DIR"): "H2c",
-
     ("elapsed_seconds", "FairSMOTE"): "H3a",
     ("elapsed_seconds", "Reweighing"): "H3b",
     ("elapsed_seconds", "DIR"): "H3c",
@@ -53,202 +70,262 @@ HYPOTHESIS_MAP = {
 METRIC_DIRECTION = {
     "fairness_score": "lower",  # lower deviation = fairer
     "elapsed_seconds": "lower",  # faster is better
-    "execution_time": "lower",  # in case you used this name
     "performance_score": "higher",  # higher PR-AUC is better
 }
 
 
+# ---------------------------------------------------------------------------
+# Statistics
+# ---------------------------------------------------------------------------
+
 def vargha_delaney_a12(x: ArrayLike, y: ArrayLike) -> float:
     """
-    Compute the Vargha–Delaney A₁₂ effect size.
-
-    A₁₂ = P(X > Y) + 0.5 · P(X = Y), where X and Y are the two samples.
-    A₁₂ = 0.5 indicates no stochastic difference; > 0.5 means X tends to be
-    larger than Y.
+    Compute the Vargha–Delaney A₁₂ effect size, A₁₂ = P(X > Y) + 0.5 · P(X = Y).
 
     Parameters
     ----------
-    x : array-like
-        First sample (FATE scores).
-    y : array-like
-        Second sample (baseline scores).
+    x, y : array-like
+        The two samples (FATE and baseline scores).
 
     Returns
     -------
     float
-        A₁₂ value in [0, 1].
-
-    Notes
-    -----
-    For metrics where *lower* is better (fairness_score, elapsed_seconds),
-    ``compare_method`` computes ``a12_effective = 1 − A₁₂`` so that
-    ``a12_effective > 0.5`` consistently indicates FATE is better regardless
-    of the metric direction.
+        A₁₂ in [0, 1]; 0.5 means no stochastic difference.
     """
-    x = np.array(x)
-    y = np.array(y)
-    nx = len(x)
-    ny = len(y)
-    # simpler implementation:
-    # use rankdata if you want exact ties, but this simple form is often enough:
-    combined = np.concatenate([x, y])
-    from scipy.stats import rankdata
-    r = rankdata(combined)
-    rx = r[:nx].sum()
-    a12 = (rx / nx - (nx + 1) / 2) / ny
-    return a12
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    ranks = rankdata(np.concatenate([x, y]))
+    return float((ranks[:len(x)].sum() / len(x) - (len(x) + 1) / 2) / len(y))
 
 
-def compare_method(df: pd.DataFrame, metric: str, baseline_label: str,
-                   results_list: Optional[list[dict[str, object]]] = None) -> None:
+def mgg_statistic(d: np.ndarray) -> float:
     """
-    Compare FATE against one baseline on one metric using Wilcoxon and A₁₂.
+    Miao–Gel–Gastwirth symmetry statistic ``sqrt(n)·(mean − median)/J``.
 
-    Pivots *df* to align FATE and baseline scores per (dataset_name,
-    protected_attribute, model_identifier) group, runs the two-sided Wilcoxon
-    signed-rank test, computes A₁₂, and appends a structured result row.
+    Parameters
+    ----------
+    d : np.ndarray
+        Paired differences.
+
+    Returns
+    -------
+    float
+        The statistic; 0.0 when all values equal the median (J = 0), which is
+        a perfectly symmetric sample.
+    """
+    median = np.median(d)
+    spread = np.sqrt(np.pi / 2) * np.mean(np.abs(d - median))
+    if spread == 0:
+        return 0.0
+    return float(np.sqrt(len(d)) * (np.mean(d) - median) / spread)
+
+
+def symmetry_test(d: np.ndarray, replicates: int = BOOTSTRAP_REPLICATES,
+                  seed: int = BOOTSTRAP_SEED) -> tuple[float, float]:
+    """
+    Test the symmetry of *d* about its (unknown) median with the MGG statistic.
+
+    The null distribution is obtained by resampling from the symmetrised
+    sample ``{d − median(d)} ∪ {median(d) − d}``, which is symmetric by
+    construction.
+
+    Parameters
+    ----------
+    d : np.ndarray
+        Paired differences.
+    replicates : int
+        Number of bootstrap replicates.
+    seed : int
+        Seed of the bootstrap generator (results are reproducible).
+
+    Returns
+    -------
+    tuple
+        ``(statistic, p_value)``; small p-values indicate asymmetry.
+    """
+    observed = mgg_statistic(d)
+    centred = d - np.median(d)
+    pool = np.concatenate([centred, -centred])
+    rng = np.random.default_rng(seed)
+    samples = rng.choice(pool, size=(replicates, len(d)), replace=True)
+    null = np.array([mgg_statistic(s) for s in samples])
+    p_value = (np.sum(np.abs(null) >= abs(observed)) + 1) / (replicates + 1)
+    return observed, float(p_value)
+
+
+def sign_test(d: np.ndarray) -> float:
+    """
+    Exact two-sided sign test of median(d) = 0; zero differences are discarded.
+
+    Parameters
+    ----------
+    d : np.ndarray
+        Paired differences.
+
+    Returns
+    -------
+    float
+        p-value (1.0 if all differences are zero).
+    """
+    non_zero = d[d != 0]
+    if len(non_zero) == 0:
+        return 1.0
+    return float(binomtest(int(np.sum(non_zero > 0)), len(non_zero), 0.5).pvalue)
+
+
+def holm_adjust(p_values: ArrayLike) -> np.ndarray:
+    """
+    Holm–Bonferroni step-down adjustment (family-wise error rate control).
+
+    Parameters
+    ----------
+    p_values : array-like
+        Unadjusted p-values of the family of hypotheses.
+
+    Returns
+    -------
+    np.ndarray
+        Adjusted p-values, in the input order; reject H_i iff adjusted p_i < alpha.
+    """
+    p = np.asarray(p_values, dtype=float)
+    m = len(p)
+    adjusted = np.empty(m)
+    running_max = 0.0
+    for rank, idx in enumerate(np.argsort(p, kind="stable")):
+        running_max = max(running_max, (m - rank) * p[idx])
+        adjusted[idx] = min(1.0, running_max)
+    return adjusted
+
+
+# ---------------------------------------------------------------------------
+# Analysis
+# ---------------------------------------------------------------------------
+
+def paired_values(df: pd.DataFrame, metric: str, baseline: str
+                  ) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Align FATE and *baseline* values of *metric* on the configuration keys.
 
     Parameters
     ----------
     df : pd.DataFrame
-        Combined results with columns: ``dataset_name``, ``protected_attribute``,
-        ``model_identifier``, ``method``, and the target *metric*.
+        Per-method results (columns ``PAIR_KEYS``, ``method`` and *metric*).
     metric : str
-        Metric to compare: ``'fairness_score'``, ``'performance_score'``, or
-        ``'elapsed_seconds'``.
-    baseline_label : str
-        Label of the comparison method in the ``method`` column
-        (``'FairSMOTE'``, ``'Reweighing'``, or ``'DIR'``).
-    results_list : list or None, optional
-        If provided, a result dict is appended with keys: ``hypothesis``,
-        ``metric``, ``direction``, ``baseline``, ``n_pairs``, ``fate_mean``,
-        ``baseline_mean``, ``p_value``, ``a12_raw``, ``a12_effective``,
-        ``significant_0.05``, ``who_is_better``.
+    baseline : str
 
-    Notes
-    -----
-    ``who_is_better`` is one of: ``'FATE_better'``, ``'Baseline_better'``,
-    ``'No_diff'`` (p >= 0.05), or ``'Tie'`` (significant but A₁₂_eff = 0.5).
+    Returns
+    -------
+    tuple
+        ``(fate_values, baseline_values)`` for the configurations where both exist.
 
-    The metric direction is read from ``METRIC_DIRECTION``:
-    ``'lower'`` for fairness_score and elapsed_seconds; ``'higher'`` for
-    performance_score.  For lower-is-better metrics, ``a12_effective = 1 −
-    a12_raw`` so that values > 0.5 still indicate FATE is favoured.
+    Raises
+    ------
+    KeyError
+        If FATE or *baseline* does not appear in the ``method`` column.
     """
+    pivot = df.pivot_table(index=PAIR_KEYS, columns="method", values=metric)
+    missing = {FATE_LABEL, baseline} - set(pivot.columns)
+    if missing:
+        raise KeyError(f"method(s) {sorted(missing)} missing for metric '{metric}'")
+    pairs = pivot[[FATE_LABEL, baseline]].dropna()
+    return pairs[FATE_LABEL].to_numpy(), pairs[baseline].to_numpy()
 
-    direction = METRIC_DIRECTION.get(metric, "higher")  # default: higher is better
 
-    # pivot so that each row has columns FATE and baseline_label for the given metric
-    pivot = df.pivot_table(
-        index=["dataset_name", "protected_attribute", "model_identifier"],
-        columns="method",
-        values=metric,
-    )
+def compare_method(df: pd.DataFrame, metric: str, baseline: str) -> dict[str, object]:
+    """
+    Run the unadjusted tests for one hypothesis (FATE vs *baseline* on *metric*).
 
-    if "FATE" not in pivot.columns or baseline_label not in pivot.columns:
-        print(f"[WARN] Missing FATE or {baseline_label} for metric {metric}")
-        return
+    Parameters
+    ----------
+    df : pd.DataFrame
+    metric : str
+    baseline : str
 
-    # IMPORTANT: use baseline_label variable, not the literal string
-    sub = pivot[["FATE", baseline_label]].dropna()
-    if len(sub) < 1:
-        print(f"[WARN] No paired data for {baseline_label} on metric {metric}")
-        return
-
-    x = sub["FATE"].values
-    y = sub[baseline_label].values
-
-    # Wilcoxon signed-rank (paired)
-    try:
-        stat, p = wilcoxon(x, y, alternative="two-sided")
-    except ValueError as e:
-        print(f"[WARN] Wilcoxon failed for {baseline_label}, metric {metric}: {e}")
-        return
-
-    a12_raw = vargha_delaney_a12(x, y)  # P(FATE > baseline) + 0.5 P(=)
-
-    fate_mean = float(np.nanmean(x))
-    base_mean = float(np.nanmean(y))
-    n = len(x)
-
-    # Re-interpret A12 depending on direction:
-    # - If higher is better: a12_eff = a12_raw
-    # - If lower is better:  a12_eff = 1 - a12_raw (so > 0.5 still means FATE better)
-    if direction == "higher":
-        a12_eff = a12_raw
-    else:  # direction == "lower"
-        a12_eff = 1.0 - a12_raw
-
-    # Decide qualitative direction
-    if p < 0.05:
-        if a12_eff > 0.5:
-            direction_label = "FATE_better"
-            msg = " -> Significant: FATE tends to be better (given metric direction)."
-        elif a12_eff < 0.5:
-            direction_label = "Baseline_better"
-            msg = " -> Significant: baseline tends to be better (given metric direction)."
-        else:
-            direction_label = "Tie"
-            msg = " -> Significant but A12_eff == 0.5 (tie)."
-    else:
-        direction_label = "No_diff"
-        msg = " -> No statistically significant difference."
-
-    # console output
-    print(f"\n=== {metric} ({direction}-is-better) : FATE vs {baseline_label} ===")
-    print(f"n = {n}")
-    print(f"FATE         mean = {fate_mean:.4f}")
-    print(f"{baseline_label:13s} mean = {base_mean:.4f}")
-    print(f"Wilcoxon p-value = {p:.4f}")
-    print(f"Vargha–Delaney A12 (raw, FATE vs {baseline_label}) = {a12_raw:.3f}")
-    print(f"A12 (interpreted wrt direction)                    = {a12_eff:.3f}")
-    print(msg)
-
-    # hypothesis ID, if you use them
-    hyp_id = HYPOTHESIS_MAP.get((metric, baseline_label), "")
-
-    row = {
-        "hypothesis": hyp_id,
+    Returns
+    -------
+    dict
+        One row of the output table without the Holm-adjusted columns, which
+        are added by ``run_tests`` once all nine p-values are known.
+    """
+    x, y = paired_values(df, metric, baseline)
+    d = x - y
+    direction = METRIC_DIRECTION[metric]
+    a12_raw = vargha_delaney_a12(x, y)
+    symmetry_stat, symmetry_p = symmetry_test(d)
+    return {
+        "hypothesis": HYPOTHESIS_MAP[(metric, baseline)],
         "metric": metric,
-        "direction": direction,          # 'higher' or 'lower'
-        "baseline": baseline_label,
-        "n_pairs": n,
-        "fate_mean": fate_mean,
-        "baseline_mean": base_mean,
-        "p_value": float(p),
-        "a12_raw": float(a12_raw),
-        "a12_effective": float(a12_eff),  # > 0.5 => FATE better, regardless of direction
-        "significant_0.05": p < 0.05,
-        "who_is_better": direction_label,  # FATE_better / Baseline_better / No_diff / Tie
+        "direction": direction,
+        "baseline": baseline,
+        "n_pairs": len(d),
+        "fate_mean": float(np.mean(x)),
+        "baseline_mean": float(np.mean(y)),
+        "p_value": float(wilcoxon(x, y, alternative="two-sided").pvalue),
+        "a12_raw": a12_raw,
+        "a12_effective": a12_raw if direction == "higher" else 1.0 - a12_raw,
+        "symmetry_stat": symmetry_stat,
+        "symmetry_p": symmetry_p,
+        "sign_p": sign_test(d),
     }
 
-    if results_list is not None:
-        results_list.append(row)
+
+def _winner(significant: bool, a12_effective: float) -> str:
+    """Label the direction of a (possibly non-significant) comparison."""
+    if not significant:
+        return "No_diff"
+    if a12_effective > 0.5:
+        return "FATE_better"
+    if a12_effective < 0.5:
+        return "Baseline_better"
+    return "Tie"
+
+
+def run_tests(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Run all nine comparisons and apply the Holm–Bonferroni correction.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Per-method results.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per hypothesis (see README, Section 6, for the columns).
+    """
+    table = pd.DataFrame([compare_method(df, m, b) for m in METRICS for b in BASELINES])
+    table["p_holm"] = holm_adjust(table["p_value"])
+    table["sign_p_holm"] = holm_adjust(table["sign_p"])
+    table["symmetric_0.05"] = table["symmetry_p"] >= ALPHA
+    table["significant_holm_0.05"] = table["p_holm"] < ALPHA
+    table["sign_significant_holm_0.05"] = table["sign_p_holm"] < ALPHA
+    table["who_is_better"] = [_winner(s, a) for s, a in
+                              zip(table["significant_holm_0.05"], table["a12_effective"])]
+    table["conclusion_robust"] = (table["significant_holm_0.05"]
+                                  == table["sign_significant_holm_0.05"])
+    return table
+
+
+def print_summary(table: pd.DataFrame) -> None:
+    """Print a compact, human-readable version of *table*."""
+    cols = ["hypothesis", "baseline", "n_pairs", "p_value", "p_holm", "symmetry_p",
+            "sign_p_holm", "a12_effective", "who_is_better", "conclusion_robust"]
+    with pd.option_context("display.width", 160, "display.float_format", "{:.4g}".format):
+        print(table[cols].to_string(index=False))
 
 
 def main(argv: Optional[list[str]] = None) -> None:
-    """
-    Run all nine Wilcoxon tests and save a summary CSV of hypothesis test results.
-
-    Iterates over all (metric × baseline) combinations, calls
-    ``compare_method`` for each, and writes the collected rows to
-    ``results/rq2/rq2_hypothesis_tests.csv``.
-    """
+    """Command-line entry point: compute Table 4 and write it to CSV."""
     parser = argparse.ArgumentParser(description="RQ2: hypothesis tests H1a-H3c.")
     parser.add_argument("--input", type=Path, default=paths.RQ2_RESULTS_DIR / RESULTS_NAME,
                         help="per-method results (e.g. reference/rq2/%s)" % RESULTS_NAME)
     parser.add_argument("--out", type=Path, default=paths.RQ2_RESULTS_DIR / TESTS_NAME)
     args = parser.parse_args(argv)
-    df = pd.read_csv(args.input)
-
-    summary_rows = []
-    for metric in ["fairness_score", "performance_score", "elapsed_seconds"]:
-        for baseline in ["FairSMOTE", "Reweighing", "DIR"]:
-            compare_method(df, metric, baseline, results_list=summary_rows)
-
-    summary_df = pd.DataFrame(summary_rows)
+    table = run_tests(pd.read_csv(args.input))
+    print_summary(table)
     paths.ensure_dir(args.out.parent)
-    summary_df.to_csv(args.out, index=False)
+    table.to_csv(args.out, index=False)
     print(f"Hypothesis tests saved to {args.out}")
 
 

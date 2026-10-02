@@ -124,12 +124,17 @@ RQ2_data_analysis/preprocessing_experiments.py
     F 436:0 run_baseline_method - A (1)
     F 760:0 main - A (1)
 RQ2_data_analysis/rq2_results.py
-    F 102:0 compare_method - B (10)
-    F 229:0 main - A (3)
-    F 61:0 vargha_delaney_a12 - A (1)
-RQ2_data_analysis/assumptions.py
-    F 48:0 check_assumptions - A (5)
-    F 121:0 main - A (3)
+    F 272:0 _winner - A (4)
+    F 283:0 run_tests - A (4)
+    F 101:0 mgg_statistic - A (2)
+    F 123:0 symmetry_test - A (2)
+    F 156:0 sign_test - A (2)
+    F 176:0 holm_adjust - A (2)
+    F 204:0 paired_values - A (2)
+    F 234:0 compare_method - A (2)
+    F 81:0 vargha_delaney_a12 - A (1)
+    F 310:0 print_summary - A (1)
+    F 318:0 main - A (1)
 tests/conftest.py
     F 82:0 synthetic_fate_dataset - A (2)
     F 39:0 isolated_fitness_cache - A (1)
@@ -237,6 +242,6 @@ RQ1_data_analysis/configurations_results.py
     F 85:0 main - B (7)
     F 35:0 summarize_group - A (1)
 
-199 blocks (classes, functions, methods) analyzed.
-Average complexity: A (2.9447236180904524)
+205 blocks (classes, functions, methods) analyzed.
+Average complexity: A (2.8634146341463413)
 ```

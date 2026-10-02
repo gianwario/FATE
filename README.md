@@ -106,7 +106,6 @@ flowchart TD
 | 2d · RQ1 figures | `python -m RQ1_data_analysis.rq1_visualizations` | outputs of 2a and 2c | `results/rq1/figures/` (Fig. 2 boxplots, Fig. 3 parameter plots) |
 | 3a · RQ2 experiments | `python -m RQ2_data_analysis.preprocessing_experiments` | `results/rq1/rq1_fate_results_best_per_group.csv`, `datasets/*.csv` | `results/rq2/rq2_all_experiments_results.csv` (FATE re-runs + FairSMOTE, Reweighing, DIR) |
 | 3b · RQ2 hypothesis tests | `python -m RQ2_data_analysis.rq2_results` | `results/rq2/rq2_all_experiments_results.csv` | `results/rq2/rq2_hypothesis_tests.csv` (Table 4) |
-| 3c · RQ2 distribution checks | `python -m RQ2_data_analysis.assumptions` | `results/rq2/rq2_all_experiments_results.csv` | console output only |
 
 `run_replication.sh` chains these commands:
 
@@ -147,7 +146,6 @@ Every versioned file is listed below. Nothing else is needed to run the package.
 | `RQ1_data_analysis/rq1_visualizations.py` | Stage 2d | – | – |
 | `RQ2_data_analysis/preprocessing_experiments.py` | Stage 3a | – | – |
 | `RQ2_data_analysis/rq2_results.py` | Stage 3b | – | – |
-| `RQ2_data_analysis/assumptions.py` | Stage 3c | – | – |
 | `RQ1_data_analysis/__init__.py`, `RQ2_data_analysis/__init__.py`, `tests/**/__init__.py` | Package markers (empty) | – | Python |
 | **Entry point and tooling** | | | |
 | `run_replication.sh` | Environment check and pipeline driver ([Section 3](#3-replication-pipeline-and-data-flow)) | – | user |
@@ -182,7 +180,7 @@ Using the reference grid, stages 2–3 reproduce the archived analyses exactly:
 | Regenerated from `reference/` | Compared with | Outcome |
 | --- | --- | --- |
 | `rq1_fate_by_*.csv`, `rq1_fate_full_paramgrid_summary.csv` | `reference/rq1/` | Identical |
-| `rq2_hypothesis_tests.csv` (from `reference/rq2/rq2_all_experiments_results.csv`) | `reference/rq2/rq2_hypothesis_tests.csv` | Identical |
+| `rq2_hypothesis_tests.csv` (from `reference/rq2/rq2_all_experiments_results.csv`) | `reference/rq2/rq2_hypothesis_tests.csv` | Identical in every column of the archived file; the regenerated file adds the symmetry check, the sign test and the Holm-adjusted p-values (Section 6) |
 | `rq1_fate_results_best_per_group.csv` | `reference/rq1/` (Table 3) | Identical fitness, FS, PS and pipelines for all 24 groups. See the note on ties below. |
 
 **Ties in Table 3.** Many GA configurations reach the same best pipeline, and therefore the same fitness, FS and PS. Stage 2b keeps the first tied configuration in file order and also writes *all* tied configurations to `rq1_fate_results_tied_best.csv`. Every configuration reported in the paper appears in that file.
@@ -219,9 +217,22 @@ Created only if a run fails. Each entry records the timestamp, dataset, protecte
 
 One row per (dataset, protected attribute, model, method), with `method` ∈ {FATE, FairSMOTE, Reweighing, DIR} and columns `performance_score`, `fairness_score`, `elapsed_seconds`, `undefined_fairness_folds` (baselines: folds in which a fairness metric is undefined), `fairness_undefined` (baselines: FS undefined and set to 1.0, [Section 7.2](#72-undefined-fairness-values)), `error`.
 
-### `results/rq2/rq2_hypothesis_tests.csv` (Stage 3b)
+### `results/rq2/rq2_hypothesis_tests.csv` (Stage 3b, Table 4)
 
-One row per hypothesis H1a–H3c: metric, direction, baseline, number of pairs, means, p-value, Vargha–Delaney A₁₂ (raw and direction-adjusted), significance and winner.
+One row per hypothesis H1a–H3c. Each hypothesis compares FATE and one baseline on one metric over the 24 paired configurations (dataset, protected attribute, model).
+
+| Column | Description |
+| --- | --- |
+| `hypothesis`, `metric`, `direction`, `baseline`, `n_pairs` | Identification of the comparison; `direction` is `lower` or `higher` is better |
+| `fate_mean`, `baseline_mean` | Means of the metric |
+| `p_value` | Two-sided exact Wilcoxon signed-rank test on the paired differences (FATE − baseline) |
+| `p_holm` | `p_value` adjusted with the Holm–Bonferroni procedure over the nine hypotheses |
+| `symmetry_stat`, `symmetry_p`, `symmetric_0.05` | Miao–Gel–Gastwirth test of symmetry of the paired differences (assumption of the Wilcoxon signed-rank test); p-value from a symmetrised bootstrap with 10,000 replicates and a fixed seed |
+| `sign_p`, `sign_p_holm` | Exact sign test on the paired differences (no symmetry assumption), unadjusted and Holm-adjusted |
+| `a12_raw`, `a12_effective` | Vargha–Delaney A₁₂; `a12_effective > 0.5` always favours FATE |
+| `significant_holm_0.05`, `sign_significant_holm_0.05` | Decisions at α = 0.05 on the Holm-adjusted p-values |
+| `who_is_better` | `FATE_better`, `Baseline_better` or `No_diff`, from `significant_holm_0.05` and `a12_effective` |
+| `conclusion_robust` | True if the Wilcoxon and the sign test lead to the same decision |
 
 ---
 
@@ -284,7 +295,7 @@ An **infeasible** pipeline receives fitness `-inf` (`fitness.INFEASIBLE`): it ra
 | Fig. 2 — FATE vs baselines | `RQ1_data_analysis/rq1_results.py`, `rq1_visualizations.py` | `compute_baselines`, `plot_fate_vs_baselines` |
 | Fig. 3 — GA parameter effects | `RQ1_data_analysis/configurations_results.py`, `rq1_visualizations.py` | `summarize_group`, `make_all_param_plots` |
 | RQ2 baselines (Section 4.2.4) | `RQ2_data_analysis/preprocessing_experiments.py` | `run_rq2`, `run_baseline_method` |
-| Table 4 — hypothesis tests | `RQ2_data_analysis/rq2_results.py` | `compare_method`, `vargha_delaney_a12` |
+| Table 4 — hypothesis tests | `RQ2_data_analysis/rq2_results.py` | `run_tests` → `compare_method` (`wilcoxon`, `symmetry_test`, `sign_test`, `vargha_delaney_a12`), `holm_adjust` |
 
 ---
 
