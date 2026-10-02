@@ -663,7 +663,7 @@ def _build_classifier(model: str) -> Classifier:
     if model == 'svc':
         return LinearSVC(dual=False, max_iter=10000, tol=1e-4, random_state=42)
     if model == 'xgb':
-        return XGBClassifier(use_label_encoder=False, eval_metric='logloss',
+        return XGBClassifier(eval_metric='logloss',
                              n_estimators=100, tree_method='hist',
                              verbosity=0, random_state=42, n_jobs=1)
     raise ValueError(f"Unknown model identifier: {model}")

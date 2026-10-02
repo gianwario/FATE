@@ -28,11 +28,13 @@ group and is the direct input of ``rq2_results``.
 """
 import argparse
 import time
+import warnings
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import pandas as pd
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.metrics import average_precision_score
 from sklearn.model_selection import StratifiedKFold
 from sklearn.ensemble import RandomForestClassifier
@@ -86,7 +88,7 @@ def build_model(model_id: str) -> Classifier:
     elif model_id == 'svc':
         classifier = LinearSVC(dual=False, max_iter=10000, tol=1e-4, random_state=42)
     elif model_id == 'xgb':
-        classifier = XGBClassifier(use_label_encoder=False, eval_metric='logloss',
+        classifier = XGBClassifier(eval_metric='logloss',
                                    n_estimators=100, tree_method='hist',
                                    verbosity=0, random_state=42, n_jobs=1)
 
@@ -547,7 +549,10 @@ def _evaluate_baseline(sample_ready: pd.DataFrame, ds_cfg: DatasetConfig, protec
         s_train = s.iloc[train_idx]
 
         start = time.time()
-        with blas_errstate():
+        with blas_errstate(), warnings.catch_warnings():
+            # Same configuration as fitness.py: the classifiers' hyper-parameters
+            # are fixed by the study design (README, Section 7.1).
+            warnings.simplefilter("ignore", ConvergenceWarning)
             x_tr, y_tr, sample_weight = _mitigated_training_data(
                 method_name, x_train, y_train, s_train, target, protected_attr)
             model = build_model(model_id)
