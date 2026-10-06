@@ -17,7 +17,6 @@ This package contains the implementation of **FATE** (Fairness-Aware Trade-Off E
 8. [How the code maps to the paper](#8-how-the-code-maps-to-the-paper)
 9. [Tests and code quality](#9-tests-and-code-quality)
 10. [Use of AI assistance](#10-use-of-ai-assistance)
-11. [Development history](#11-development-history)
 
 ---
 
@@ -335,7 +334,7 @@ radon cc -s -a .               # cyclomatic complexity of the whole codebase
 
 ## 10. Use of AI assistance
 
-<!-- AUTHORS: confirm/complete before release -->
+
 The FATE algorithm, the experimental design and the original experiment code used to produce the results reported in the paper were written by the authors. AI coding assistants were used during the two revision rounds of the replication package, with every change reviewed by the authors, who take full responsibility for the code:
 
 - **First revision:** Claude Code (Anthropic) assisted with docstrings, refactoring for lower cyclomatic complexity, the pytest suite, linting fixes and `run_replication.sh`.
@@ -344,8 +343,3 @@ The FATE algorithm, the experimental design and the original experiment code use
 No other AI tools were used. The `.cursorignore` / `.cursorindexingignore` entries in `.gitignore` come from GitHub's standard Python `.gitignore` template.
 
 ---
-
-## 11. Development history
-
-<!-- AUTHORS: confirm/complete before release -->
-The changes made in each review round are committed separately in the [GitHub repository](https://github.com/gianwario/FATE), with a commit message that lists the changes by reviewer comment (e.g. `R3-C1`). The permanent Zenodo archive corresponds to the tagged release accompanying the paper.
