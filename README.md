@@ -1,7 +1,7 @@
 # Replication Package — Data Preparation for Fairness–Performance Trade-Offs
 
 > **Data Preparation for Fairness–Performance Trade-Offs: A Practitioner-Friendly Alternative?**
-> Empirical Software Engineering (EMSE-D-25-00975). Permanent archive: [10.5281/zenodo.21329487](https://doi.org/10.5281/zenodo.21329487).
+> Empirical Software Engineering (EMSE-D-25-00975). Permanent archive: [10.5281/zenodo.23190813](https://doi.org/10.5281/zenodo.23190813).
 
 This package contains the implementation of **FATE** (Fairness-Aware Trade-Off Enhancement), the datasets, the scripts that produce every table and figure of RQ1 and RQ2, and the archived outputs of the runs reported in the paper.
 
